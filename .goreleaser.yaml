@@ -1,0 +1,33 @@
+version: 2
+project_name: af
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/af
+    binary: af
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X agentfactory.sh/af/internal/cli.Version={{ .Version }}
+      - -X agentfactory.sh/af/internal/cli.Commit={{ .ShortCommit }}
+
+archives:
+  - name_template: "af_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [LICENSE, README.md]
+
+checksum:
+  name_template: checksums.txt
+
+# release-please owns the tag, the GitHub release, and its notes
+# (CHANGELOG-derived); goreleaser only attaches artifacts.
+changelog:
+  disable: true
+
+release:
+  mode: keep-existing

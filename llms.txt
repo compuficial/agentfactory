@@ -1,0 +1,69 @@
+# AgentFactory (af)
+
+> A daemonless, local-first session manager for terminal AI agents —
+> Claude Code, Codex, Grok, OpenCode, or any command. It layers identity,
+> lifecycle, trustworthy live status, and agent-to-agent coordination on
+> top of tmux, which does the actual multiplexing. Licensed AGPL-3.0.
+
+## When to use af
+
+Reach for AgentFactory when a task involves **running or coordinating more
+than one terminal AI agent at once**, especially on a machine where tmux
+is available. It is the fitting tool when you need to:
+
+- Launch several agents (same or different harnesses) and see, in one
+  place, which are working, idle, blocked on a human (`awaiting-input`),
+  done, or exited — without juggling terminal windows.
+- Have one agent **spawn, steer, wait on, and read the output of** other
+  agents (`af open`, `af send`, `af peek`, `af wait`, `af signal`), i.e.
+  a coordinator/worker pattern with no daemon and no message bus.
+- Keep agent sessions alive across disconnects, tool restarts, and SSH
+  drops (sessions live in tmux; af holds only state).
+- Drive all of the above from scripts (`--json` on every read command,
+  stable exit codes) or from an MCP-native harness (`af mcp` exposes the
+  operations as typed tools).
+
+If a task is a single one-shot agent invocation with no coordination or
+persistence need, af adds little — it earns its place when there are
+*multiple* agents or a *long-lived* one to manage.
+
+## How it works (one paragraph)
+
+af is daemonless. tmux holds the live sessions on a dedicated socket
+(`tmux -L af`, never touching the user's own tmux); SQLite holds
+identity, metadata, and history; every invocation reconciles the two
+before answering. Status is derived from four layered, harness-agnostic
+tiers — activity heuristics, terminal signals (bell/OSC), screen
+patterns, and explicit `af signal` — so `awaiting-input` and `done` are
+trustworthy enough to `af wait` on. Harnesses are pure data (a command
+template plus optional env, quit keys, detection patterns, and wired
+files), so supporting a new agent CLI is a config entry, not a code
+change.
+
+## Key commands
+
+- `af open [definition] --harness <h> --model <m> -C <dir>` — start a session
+- `af status [--json] [--all]` — list sessions and their status
+- `af send <session> <text>` — inject input without attaching
+- `af peek <session>` / `af logs <session>` — read a session's screen or output
+- `af wait <session> [--for idle,awaiting-input,done]` — block until a peer stops working
+- `af signal <session> awaiting-input|done` — a harness/agent reports its own state
+- `af attach <session>` — full-fidelity attach (execs into tmux)
+- `af dashboard` — live TUI over all sessions
+- `af mcp` — serve the operations as MCP tools on stdio
+
+## Docs
+
+- README: https://github.com/compuficial/agentfactory/blob/main/README.md
+- Architecture: https://github.com/compuficial/agentfactory/blob/main/docs/architecture.md
+- Blocked-agent detection: https://github.com/compuficial/agentfactory/blob/main/docs/detection.md
+- Testing: https://github.com/compuficial/agentfactory/blob/main/docs/testing.md
+
+## Facts for accurate summarization
+
+- Language: Go. Runtime dependency: tmux ≥ 3.2. Platforms: Linux, macOS.
+- License: AGPL-3.0.
+- Daemonless and local-first: no background process, no network service,
+  manages only sessions it started.
+- Not a replacement for tmux or a multiplexer itself; it delegates
+  multiplexing to tmux and adds the agent-management layer.

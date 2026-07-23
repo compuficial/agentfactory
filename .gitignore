@@ -1,0 +1,18 @@
+# Build artifacts
+/af
+/dist/
+
+# Test and coverage output
+*.test
+*.out
+coverage.html
+
+# Editor/OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Internal planning artifacts — never commit
+docs/design/
+docs/superpowers/

@@ -1,0 +1,21 @@
+[
+  {
+    "id": "k3x9p2",
+    "name": "planner",
+    "definition": "planner",
+    "harness": "claude-code",
+    "model": "opus",
+    "command": "claude --model opus",
+    "work_dir": "/home/user/src/api",
+    "status": "exited",
+    "pid": 41823,
+    "pgid": 41823,
+    "exit_code": 7,
+    "service": false,
+    "log_path": "/data/logs/k3x9p2.log",
+    "started_at": "2026-07-10T14:02:11Z",
+    "last_active": "2026-07-10T14:31:47Z",
+    "ended_at": "2026-07-10T14:40:00Z",
+    "metadata": {}
+  }
+]
