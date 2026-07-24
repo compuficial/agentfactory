@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentFactory — a session manager for terminal AI agents</title>
+<meta name="description" content="Run Claude Code, Codex, Grok, OpenCode — or any command — as managed sessions: identity, live status, agent-to-agent coordination, and one dashboard over all of them. Daemonless, local-first, built on tmux.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0d13'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23ff5f9e'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0d13;
+    --bg-2: #0e131c;
+    --surface: #111725;
+    --border: #212c3e;
+    --border-bright: #31415a;
+    --text: #cdd6e4;
+    --dim: #7f8da0;
+    --faint: #55617a;
+    --cyan: #5fd7ff;
+    --magenta: #ff5f9e;
+    --green: #47d193;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+    --maxw: 1080px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(60rem 40rem at 80% -10%, rgba(95,215,255,.06), transparent 60%),
+      radial-gradient(50rem 40rem at 0% 10%, rgba(255,95,158,.05), transparent 55%);
+  }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+  .mono { font-family: var(--mono); }
+
+  /* nav */
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: blur(10px);
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-in { display: flex; align-items: center; gap: 18px; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-weight: 600; color: var(--text); }
+  .dots { display: inline-flex; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.c { background: var(--cyan); }
+  .dot.m { background: var(--magenta); animation: pulse 2.4s ease-in-out infinite; }
+  .dot.g { background: var(--green); }
+  .brand b { font-weight: 600; letter-spacing: .01em; }
+  .brand .sub { color: var(--faint); font-weight: 400; }
+  .nav-links { margin-left: auto; display: flex; gap: 22px; font-family: var(--mono); font-size: .9rem; }
+  .nav-links a { color: var(--dim); }
+  .nav-links a:hover { color: var(--cyan); text-decoration: none; }
+
+  @keyframes pulse { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,95,158,.5);} 50% { opacity:.6; box-shadow: 0 0 0 5px rgba(255,95,158,0);} }
+
+  /* hero */
+  header { padding: 84px 0 40px; }
+  .eyebrow { font-family: var(--mono); font-size: .8rem; letter-spacing: .04em; color: var(--dim); text-transform: none; margin: 0 0 22px; }
+  .eyebrow .sep { color: var(--faint); margin: 0 8px; }
+  h1 {
+    font-family: var(--mono); font-weight: 600;
+    font-size: clamp(2.3rem, 5.6vw, 4.1rem);
+    line-height: 1.04; letter-spacing: -.02em;
+    margin: 0 0 24px; color: var(--text); max-width: 15ch;
+  }
+  h1 .accent { color: var(--cyan); }
+  .lede { font-size: clamp(1.02rem, 1.6vw, 1.18rem); color: var(--dim); max-width: 52ch; margin: 0 0 34px; }
+  .lede strong { color: var(--text); font-weight: 500; }
+
+  /* command box (the signature panel) */
+  .panel { position: relative; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  .panel > .plabel {
+    position: absolute; top: -.66em; left: 16px;
+    background: var(--bg); padding: 0 9px;
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .06em; color: var(--dim);
+  }
+  .cmd { display: flex; align-items: center; gap: 14px; max-width: 460px; padding: 16px 16px 16px 18px; }
+  .cmd code { font-family: var(--mono); font-size: .98rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd code .p { color: var(--green); user-select: none; }
+  .cmd code .cur { color: var(--magenta); animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .copy {
+    margin-left: auto; flex: none;
+    font-family: var(--mono); font-size: .74rem; color: var(--dim);
+    background: transparent; border: 1px solid var(--border-bright); border-radius: 6px;
+    padding: 6px 10px; cursor: pointer; transition: color .15s, border-color .15s;
+  }
+  .copy:hover { color: var(--cyan); border-color: var(--cyan); }
+  .copy.ok { color: var(--green); border-color: var(--green); }
+
+  .req { font-family: var(--mono); font-size: .78rem; color: var(--faint); margin: 14px 0 0; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 30px; }
+  .btn {
+    font-family: var(--mono); font-size: .92rem; font-weight: 500;
+    padding: 12px 22px; border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+    display: inline-flex; align-items: center; gap: 9px; transition: transform .08s, background .15s, border-color .15s;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--magenta); color: #10040c; }
+  .btn-primary:hover { background: #ff7fb2; text-decoration: none; }
+  .btn-ghost { border-color: var(--border-bright); color: var(--cyan); }
+  .btn-ghost:hover { border-color: var(--cyan); text-decoration: none; }
+
+  /* hero two-column */
+  .hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.02fr); gap: 48px; align-items: center; }
+  .hero-visual .term { width: 100%; border-color: var(--border-bright); box-shadow: 0 34px 80px -32px rgba(0,0,0,.78); }
+  .hero-visual .term .bar { padding: 14px 20px; }
+  .hero-visual .term pre { font-size: .94rem; line-height: 1.95; padding: 26px 24px; }
+
+  /* screenshot */
+  .shot { margin: 30px 0 20px; }
+  .shot .panel { padding: 0; overflow: hidden; }
+  .shot img { display: block; width: 100%; height: auto; border-radius: 10px; }
+  .shot .cap { font-family: var(--sans); font-size: .92rem; color: var(--dim); margin: 16px 2px 0; max-width: 62ch; }
+  .shot .cap b { color: var(--magenta); font-weight: 500; }
+
+  /* sections */
+  section { padding: 60px 0; border-top: 1px solid var(--border); }
+  .kicker { font-family: var(--mono); font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin: 0 0 26px; }
+
+  /* features */
+  .feat { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  .card { padding: 24px 22px; }
+  .card .h { display: flex; align-items: center; gap: 11px; font-family: var(--mono); font-weight: 500; font-size: 1.04rem; color: var(--text); margin: 0 0 10px; }
+  .card p { margin: 0; color: var(--dim); font-size: .96rem; }
+  .card .dot { width: 8px; height: 8px; }
+
+  /* how */
+  .term { padding: 0; overflow: hidden; }
+  .term .bar { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-bottom: 1px solid var(--border); color: var(--faint); font-family: var(--mono); font-size: .76rem; }
+  .term .bar .tdots { display: inline-flex; gap: 6px; margin-right: 8px; }
+  .term .bar .tdots i { width: 10px; height: 10px; border-radius: 50%; background: var(--border-bright); display: inline-block; }
+  .term pre { margin: 0; padding: 20px 18px; font-family: var(--mono); font-size: .9rem; line-height: 1.85; color: var(--text); overflow-x: auto; }
+  .term .p { color: var(--green); }
+  .term .c { color: var(--faint); }
+  .term .k { color: var(--cyan); }
+  .term .mg { color: var(--magenta); }
+
+  /* install grid */
+  .igrid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 22px; }
+  .igrid .card h3 { font-family: var(--mono); font-size: .96rem; font-weight: 500; margin: 0 0 10px; color: var(--text); }
+  .igrid .card code, .icode { font-family: var(--mono); font-size: .88rem; color: var(--cyan); }
+  .igrid .card p { margin: 10px 0 0; font-size: .9rem; }
+  .note { font-family: var(--sans); color: var(--faint); font-size: .9rem; margin-top: 20px; max-width: 64ch; }
+
+  footer { border-top: 1px solid var(--border); padding: 44px 0 60px; }
+  .foot { display: flex; flex-wrap: wrap; gap: 26px 34px; align-items: baseline; font-family: var(--mono); font-size: .84rem; }
+  .foot a { color: var(--dim); }
+  .foot a:hover { color: var(--cyan); text-decoration: none; }
+  .foot .meta { margin-left: auto; color: var(--faint); }
+
+  @media (max-width: 880px) {
+    .hero-grid { grid-template-columns: 1fr; gap: 34px; }
+  }
+  @media (max-width: 720px) {
+    .feat, .igrid { grid-template-columns: 1fr; }
+    .nav-links a.hide-sm { display: none; }
+    header { padding: 56px 0 24px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-in">
+    <span class="brand">
+      <span class="dots"><i class="dot c"></i><i class="dot m"></i><i class="dot g"></i></span>
+      <b>af</b><span class="sub">/ agentfactory</span>
+    </span>
+    <span class="nav-links">
+      <a href="#what">what</a>
+      <a href="#start" class="hide-sm">quick start</a>
+      <a href="#install">install</a>
+      <a href="https://github.com/compuficial/agentfactory">github ↗</a>
+    </span>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">daemonless<span class="sep">·</span>local-first<span class="sep">·</span>built on tmux</p>
+        <h1>A session manager for <span class="accent">terminal AI agents</span></h1>
+        <p class="lede">Run Claude Code, Codex, Grok, OpenCode — or any command — as managed sessions: <strong>identity, live status, agent-to-agent coordination,</strong> and one dashboard over all of them.</p>
+
+        <div class="panel" style="max-width:560px">
+          <span class="plabel">install</span>
+          <div class="cmd" style="max-width:none">
+            <code id="cmd"><span class="p">$ </span>curl -fsSL agentfactory.sh/install.sh | sh<span class="cur">▋</span></code>
+            <button class="copy" id="copy" aria-label="Copy install command">copy</button>
+          </div>
+        </div>
+        <p class="req">requires tmux ≥ 3.2 · Linux and macOS</p>
+
+        <div class="cta">
+          <a class="btn btn-primary" href="#install">Install af</a>
+          <a class="btn btn-ghost" href="https://github.com/compuficial/agentfactory">View on GitHub ↗</a>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="panel term">
+          <div class="bar"><span class="tdots"><i></i><i></i><i></i></span>af status</div>
+<pre><span class="p">$</span> af status
+<span class="c">NAME       HARNESS      MODEL   STATUS</span>
+architect  claude-code  opus    <span class="mg">awaiting-input</span>
+builder    codex        gpt-5   <span class="p">working</span>
+reviewer   grok         grok-4  <span class="p">working</span>
+docs       opencode     sonnet  <span class="c">idle</span>
+tests      claude-code  haiku   <span class="p">done</span>
+llama-8b   custom       -       <span class="p">working</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section id="what">
+  <div class="wrap">
+    <p class="kicker">why af</p>
+    <div class="feat">
+      <div class="panel card">
+        <p class="h"><span class="dot m"></span>Know when you're needed</p>
+        <p>A bell, a notification, or an on-screen prompt flips a session to <span class="mono">awaiting-input</span> the instant it blocks. No polling, no per-agent setup.</p>
+      </div>
+      <div class="panel card">
+        <p class="h"><span class="dot g"></span>Agents that coordinate</p>
+        <p>One agent opens, steers, waits on, and reads another — a coordinator/worker loop with no daemon and no message bus.</p>
+      </div>
+      <div class="panel card">
+        <p class="h"><span class="dot c"></span>Status you can trust</p>
+        <p><span class="mono">working · idle · awaiting-input · done</span>, derived four independent ways — solid enough to script against or block on.</p>
+      </div>
+      <div class="panel card">
+        <p class="h"><span class="dot" style="background:var(--text)"></span>Unkillable by design</p>
+        <p>Sessions live in tmux; af only holds state. Restart, upgrade, or crash af — your agents never notice.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <p class="kicker">in 30 seconds</p>
+    <div class="panel term">
+      <div class="bar"><span class="tdots"><i></i><i></i><i></i></span>zsh — af</div>
+<pre><span class="c"># launch a Claude Code agent in a repo</span>
+<span class="p">$</span> af open <span class="k">--harness</span> claude-code <span class="k">--model</span> opus <span class="k">-C</span> ~/src/api <span class="k">--name</span> planner
+
+<span class="c"># see the whole fleet at a glance</span>
+<span class="p">$</span> af status
+
+<span class="c"># hand it work, then block until it's done</span>
+<span class="p">$</span> af send planner <span class="mg">"refactor the auth middleware, then run tests"</span>
+<span class="p">$</span> af wait planner <span class="k">--for</span> done
+
+<span class="c"># step in with a full-fidelity attach when it needs you</span>
+<span class="p">$</span> af attach planner</pre>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <p class="kicker">get af</p>
+
+    <div class="panel" style="max-width:560px">
+      <span class="plabel">recommended</span>
+      <div class="cmd" style="max-width:none">
+        <code id="cmd2"><span class="p">$ </span>curl -fsSL agentfactory.sh/install.sh | sh</code>
+        <button class="copy" id="copy2" aria-label="Copy install command">copy</button>
+      </div>
+    </div>
+    <p class="note">The script downloads the release binary for your platform, verifies its SHA-256 checksum, and drops <span class="mono">af</span> on your PATH. Read it first if you like: <a href="install.sh">install.sh</a>.</p>
+
+    <div class="igrid">
+      <div class="panel card">
+        <h3>From source</h3>
+        <div><span class="icode">make install</span></div>
+        <p>Needs Go 1.25+. Builds and installs to <span class="mono">~/.local/bin</span> with shell completion.</p>
+      </div>
+      <div class="panel card">
+        <h3>Pre-built binaries</h3>
+        <div><a class="icode" href="https://github.com/compuficial/agentfactory/releases">github.com/…/releases ↗</a></div>
+        <p>Linux and macOS, amd64 and arm64. Grab the archive, drop <span class="mono">af</span> on your PATH.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <a href="https://github.com/compuficial/agentfactory">GitHub</a>
+    <a href="https://github.com/compuficial/agentfactory/releases">Releases</a>
+    <a href="https://github.com/compuficial/agentfactory#readme">Docs</a>
+    <a href="https://github.com/compuficial/agentfactory/blob/main/LICENSE">AGPL-3.0</a>
+  </div>
+</footer>
+
+<script>
+  function wire(btnId, cmdText) {
+    var btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(cmdText).then(function () {
+        var old = btn.textContent;
+        btn.textContent = 'copied';
+        btn.classList.add('ok');
+        setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 1400);
+      });
+    });
+  }
+  var INSTALL = 'curl -fsSL agentfactory.sh/install.sh | sh';
+  wire('copy', INSTALL);
+  wire('copy2', INSTALL);
+</script>
+</body>
+</html>
