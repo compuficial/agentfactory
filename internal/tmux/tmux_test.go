@@ -125,20 +125,24 @@ func TestDeadStatusHarvest(t *testing.T) {
 	sess := testSession(t, b, "ded001", "exit 7")
 
 	// remain-on-exit holds the dead pane so the exit code is readable.
-	deadline := time.Now().Add(5 * time.Second)
+	// pane_dead can flip a beat before pane_dead_status is populated, so
+	// poll until a real status lands (code != -1) rather than trusting
+	// the first "dead" tick — that transient window is the -1 we'd
+	// otherwise read.
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		dead, code, err := b.DeadStatus(sess.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if dead {
+		if dead && code != -1 {
 			if code != 7 {
 				t.Fatalf("want exit code 7, got %d", code)
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("pane never reported dead")
+			t.Fatalf("pane never reported a settled exit status (last: dead=%v code=%d)", dead, code)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
