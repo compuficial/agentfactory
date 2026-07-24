@@ -226,7 +226,7 @@ human-only. An agent signals itself done with `af_signal(state:
 | `a` | attach; detach (`C-b d`) returns to the dashboard |
 | `Enter` | detail view — metadata, env (secrets masked), recent log; scrollable |
 | `l` | logs view (`f` toggles follow) |
-| `o` | open a session from a definition |
+| `o` | open a session from a definition (`d` deletes one) |
 | `x` / `X` | close / kill, with y/n confirm |
 | `:` | command bar — any `af` command, run in-process |
 | `?` | help · `q` quit (sessions keep running) |

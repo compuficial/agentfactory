@@ -262,6 +262,9 @@ func (m *model) viewFooter() string {
 		if m.confirmSess != nil {
 			return confirmStyle.Render(fmt.Sprintf("%s %s  %s? (y/n)", m.confirmVerb, m.confirmSess.ID, m.confirmSess.Name))
 		}
+		if m.confirmDef != nil {
+			return confirmStyle.Render(fmt.Sprintf("delete definition %s? (y/n)", m.confirmDef.Name))
+		}
 	}
 	if m.flash != "" && time.Now().Before(m.flashExpiry) {
 		return flashStyle.Render(firstLines(m.flash, 5, m.width))
@@ -424,7 +427,7 @@ func (m *model) viewPicker() string {
 		lines = append(lines, row)
 	}
 	return m.viewHeader() + "\n" + panel(titleStyle.Render("open from definition"), lines, m.width, 0) + "\n" +
-		hints("enter", "open", "j/k", "move", "esc", "cancel")
+		hints("enter", "open", "d", "delete", "j/k", "move", "esc", "cancel")
 }
 
 func (m *model) viewHelp() string {
@@ -432,7 +435,7 @@ func (m *model) viewHelp() string {
 		{"j / k, arrows", "move selection"},
 		{"enter", "session detail (metadata, env, recent log)"},
 		{"a", "attach to the selected session (detach: C-b d; inside tmux: C-b C-b d)"},
-		{"o", "open a session from a definition"},
+		{"o", "open a session from a definition (d deletes one)"},
 		{"x", "close the selected session (graceful, y/n)"},
 		{"X", "kill the selected session (immediate, y/n)"},
 		{"l", "logs view (f toggles follow)"},

@@ -78,8 +78,9 @@ type model struct {
 	detailVP viewport.Model
 
 	// confirm prompt
-	confirmVerb string // "close" | "kill"
+	confirmVerb string // "close" | "kill" | "rm-def"
 	confirmSess *core.AgentSession
+	confirmDef  *core.AgentDefinition
 }
 
 func newModel(deps Deps) *model {
@@ -103,6 +104,14 @@ type refreshMsg struct {
 }
 
 type defsMsg struct {
+	defs []*core.AgentDefinition
+	err  error
+}
+
+// defDeletedMsg carries the outcome of a picker delete plus the
+// remaining definitions, so the picker can refresh in place.
+type defDeletedMsg struct {
+	name string
 	defs []*core.AgentDefinition
 	err  error
 }
@@ -252,6 +261,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modePicker
 		return m, nil
 
+	case defDeletedMsg:
+		if msg.err != nil {
+			m.setFlash("error: " + msg.err.Error())
+			m.mode = modeList
+			return m, m.refreshCmd()
+		}
+		m.setFlash("removed definition " + msg.name)
+		m.defs = msg.defs
+		if len(m.defs) == 0 {
+			m.mode = modeList // nothing left to pick from
+			return m, nil
+		}
+		if m.pickerCursor >= len(m.defs) {
+			m.pickerCursor = len(m.defs) - 1
+		}
+		m.mode = modePicker
+		return m, nil
+
 	case flashMsg:
 		if msg.err != nil {
 			m.setFlash("error: " + msg.err.Error())
@@ -366,6 +393,18 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y": // X is shifted, so accept a still-held shift on the y
+		if m.confirmVerb == "rm-def" {
+			def := m.confirmDef
+			m.confirmDef = nil
+			store := m.deps.Store
+			return m, func() tea.Msg {
+				if err := store.DeleteDefinition(def.Name); err != nil {
+					return defDeletedMsg{name: def.Name, err: err}
+				}
+				defs, err := store.ListDefinitions()
+				return defDeletedMsg{name: def.Name, defs: defs, err: err}
+			}
+		}
 		verb, sess := m.confirmVerb, m.confirmSess
 		m.mode = modeList
 		if sess == nil {
@@ -384,6 +423,12 @@ func (m *model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return flashMsg{text: fmt.Sprintf("%s %s  %s", done, sess.ID, sess.Name), err: err}
 		}
 	case "n", "N", "esc", "q":
+		if m.confirmVerb == "rm-def" { // cancel returns to the picker, not the list
+			m.confirmDef = nil
+			m.mode = modePicker
+			m.setFlash("delete cancelled")
+			return m, nil
+		}
 		m.mode = modeList
 		m.setFlash(m.confirmVerb + " cancelled")
 	}
@@ -401,6 +446,13 @@ func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "k", "up":
 		if m.pickerCursor > 0 {
 			m.pickerCursor--
+		}
+	case "d", "x":
+		if len(m.defs) > 0 {
+			m.confirmVerb = "rm-def"
+			m.confirmDef = m.defs[m.pickerCursor]
+			m.confirmSess = nil
+			m.mode = modeConfirm
 		}
 	case "enter":
 		def := m.defs[m.pickerCursor]

@@ -286,3 +286,53 @@ func TestDashboardPicker(t *testing.T) {
 		return len(sessions) == 1 && sessions[0].Definition == "pickme"
 	}, "picker opens the chosen definition")
 }
+
+func TestDashboardDeleteDefinition(t *testing.T) {
+	deps := testDeps(t)
+	for _, n := range []string{"alpha", "beta"} { // ListDefinitions orders by name
+		if err := deps.Store.PutDefinition(&core.AgentDefinition{
+			Name: n, Harness: "custom", Config: map[string]string{"cmd": "sleep 60"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := tui.NewTestModel(deps)
+	m.Send(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Send(key("o"))
+	if !m.InPickerMode() {
+		t.Fatalf("expected picker mode:\n%s", m.View())
+	}
+
+	// Cancel path: d then n deletes nothing and stays in the picker.
+	m.Send(key("d"))
+	m.Send(key("n"))
+	if defs, _ := deps.Store.ListDefinitions(); len(defs) != 2 {
+		t.Fatalf("cancel must not delete; have %d defs", len(defs))
+	}
+	if !m.InPickerMode() {
+		t.Fatalf("cancel returns to the picker:\n%s", m.View())
+	}
+
+	// Delete the selected definition (alpha, cursor 0): d then y.
+	m.Send(key("d"))
+	m.Send(key("y"))
+	defs, err := deps.Store.ListDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 || defs[0].Name != "beta" {
+		t.Fatalf("delete should remove alpha, leaving beta; got %v", defs)
+	}
+	if !m.InPickerMode() || !strings.Contains(m.View(), "beta") {
+		t.Fatalf("picker should refresh in place to show beta:\n%s", m.View())
+	}
+
+	// Deleting the last definition drops back to the session list.
+	m.Send(key("d"))
+	m.Send(key("y"))
+	if defs, _ := deps.Store.ListDefinitions(); len(defs) != 0 {
+		t.Fatalf("second delete should empty the definitions; got %v", defs)
+	}
+	if m.InPickerMode() {
+		t.Fatal("emptying definitions should leave the picker")
+	}
+}
