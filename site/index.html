@@ -63,6 +63,10 @@
   .nav-links { margin-left: auto; display: flex; gap: 22px; font-family: var(--mono); font-size: .9rem; }
   .nav-links a { color: var(--dim); }
   .nav-links a:hover { color: var(--cyan); text-decoration: none; }
+  .nav-links .star { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-bright); border-radius: 999px; padding: 3px 11px; }
+  .nav-links .star:hover { border-color: var(--cyan); }
+  .nav-links .star svg { fill: #e3b341; flex: none; }
+  .nav-links .star .n { font-variant-numeric: tabular-nums; }
 
   @keyframes pulse { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,95,158,.5);} 50% { opacity:.6; box-shadow: 0 0 0 5px rgba(255,95,158,0);} }
 
@@ -192,6 +196,10 @@
       <a href="#start" class="hide-sm">quick start</a>
       <a href="#install">install</a>
       <a href="https://github.com/compuficial/agentfactory">github ↗</a>
+      <a class="star" href="https://github.com/compuficial/agentfactory/stargazers" aria-label="Star on GitHub">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg>
+        <span id="star-count" class="n">Star</span>
+      </a>
     </span>
   </div>
 </nav>
@@ -334,6 +342,15 @@ llama-8b   custom       -       <span class="p">working</span></pre>
   var INSTALL = 'curl -fsSL agentfactory.sh/install.sh | sh';
   wire('copy', INSTALL);
   wire('copy2', INSTALL);
+
+  // Live star count in the nav; leaves the "Star" call-to-action on failure.
+  fetch('https://api.github.com/repos/compuficial/agentfactory')
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+    .then(function (d) {
+      var n = d.stargazers_count, el = document.getElementById('star-count');
+      if (el && typeof n === 'number') el.textContent = n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+    })
+    .catch(function () {});
 </script>
 </body>
 </html>
