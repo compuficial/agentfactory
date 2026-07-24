@@ -71,6 +71,23 @@ af doctor          # verify the environment
 
 ## Quick start
 
+The fastest way in: just prefix your agent with `af`.
+
+```sh
+af claude                 # opens (or resumes) a claude session here, and attaches
+af claude --model opus    # anything after the agent name passes straight to it
+af --new claude           # force a fresh session (af's own flags go before the agent)
+```
+
+`af <agent>` in a directory launches that agent as a managed session in
+the current directory and drops you straight in — as low-friction as
+running `claude` directly, but now it's tracked, survives detach, and
+resumes with the same command. Works for any harness binary on your PATH
+(`af codex`, `af grok`, `af opencode`). Detach with `C-b d`; you're back
+at your shell and the session keeps running.
+
+The explicit form is always there when you want control:
+
 ```sh
 # Any command, managed ("custom" harness)
 af open --cmd 'python train.py' --name trainer

@@ -823,3 +823,83 @@ func TestCompileDetectWarnsOnBadRegex(t *testing.T) {
 		t.Fatalf("grok has no rules, got %+v", compiled["grok"])
 	}
 }
+
+func TestHarnessBinary(t *testing.T) {
+	set := NewHarnessSet(map[string]Harness{
+		"myagent": {CommandTmpl: `myagent --config {{.FilesDir}}/x`},
+	})
+	for name, want := range map[string]string{
+		"claude-code": "claude", "codex": "codex", "grok": "grok",
+		"opencode": "opencode", "custom": "", "myagent": "myagent",
+	} {
+		h, _ := set.Resolve(name)
+		if got := h.Binary(); got != want {
+			t.Errorf("%s.Binary() = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestMatchBinary(t *testing.T) {
+	set := NewHarnessSet(nil)
+	if h, ok := set.MatchBinary("claude"); !ok || h.Name != "claude-code" {
+		t.Fatalf("claude -> %v/%v, want claude-code", h.Name, ok)
+	}
+	if _, ok := set.MatchBinary("nope"); ok {
+		t.Fatal("nope must not match")
+	}
+	if _, ok := set.MatchBinary(""); ok {
+		t.Fatal("empty (custom's binary) must not match")
+	}
+}
+
+func TestQuoteArgs(t *testing.T) {
+	if got := QuoteArgs([]string{"--model", "opus", "write a poem"}); got != `'--model' 'opus' 'write a poem'` {
+		t.Fatalf("got %q", got)
+	}
+	if got := QuoteArgs([]string{"it's"}); got != `'it'\''s'` {
+		t.Fatalf("quote-escaping: got %q", got)
+	}
+}
+
+func TestOpenExtraArgs(t *testing.T) {
+	store, backend := testStore(t), newMockBackend()
+	m := &Manager{Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
+		DataDir: t.TempDir(), IdleThreshold: 5 * time.Second}
+	sess, err := m.Open(OpenRequest{Cmd: "sleep 600", WorkDir: "/", ExtraArgs: []string{"--foo", "a b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Command != `sleep 600 '--foo' 'a b'` {
+		t.Fatalf("passthrough not appended: %q", sess.Command)
+	}
+}
+
+func TestLiveMatch(t *testing.T) {
+	store, backend := testStore(t), newMockBackend()
+	m := &Manager{Store: store, Backend: backend}
+	now := time.Now().UTC()
+	seed := func(id, harness, wd string, status Status, last time.Time, service bool) {
+		s := &AgentSession{ID: id, Name: id, Harness: harness, Command: "x", WorkDir: wd,
+			Status: status, Service: service, StartedAt: last, LastActive: last, LogPath: "/x"}
+		if err := store.InsertSession(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("old", "claude-code", "/repo", StatusIdle, now.Add(-time.Hour), false)
+	seed("new", "claude-code", "/repo", StatusWorking, now, false)     // most recent -> winner
+	seed("other", "claude-code", "/elsewhere", StatusIdle, now, false) // wrong workdir
+	seed("codex", "codex", "/repo", StatusIdle, now, false)            // wrong harness
+	seed("svc", "claude-code", "/repo", StatusWorking, now, true)      // service, ignored
+	seed("dead", "claude-code", "/repo", StatusExited, now, false)     // terminal, excluded by ListSessions
+
+	m2, err := m.LiveMatch("claude-code", "/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2 == nil || m2.ID != "new" {
+		t.Fatalf("want most-recent live match 'new', got %v", m2)
+	}
+	if m3, _ := m.LiveMatch("grok", "/repo"); m3 != nil {
+		t.Fatalf("no grok session; want nil, got %v", m3)
+	}
+}

@@ -180,6 +180,46 @@ func (s HarnessSet) ValidateDefinition(def *AgentDefinition) error {
 	return err
 }
 
+// Binary is the harness's invocation binary — the leading literal word
+// of the command template, before any flag, space, or template action.
+// It's how the frictionless launcher maps `af claude` to the claude-code
+// harness (whose template starts with `claude`). Empty when the template
+// opens with a template action (e.g. the custom harness), which has no
+// fixed binary to match against.
+func (h Harness) Binary() string {
+	s := h.CommandTmpl
+	end := len(s)
+	if i := strings.Index(s, "{{"); i >= 0 && i < end {
+		end = i
+	}
+	if i := strings.IndexAny(s, " \t"); i >= 0 && i < end {
+		end = i
+	}
+	return strings.TrimSpace(s[:end])
+}
+
+// MatchBinary returns the harness whose invocation binary equals token
+// (e.g. "claude" -> the claude-code harness). Iterates in sorted order so
+// resolution is deterministic if two harnesses ever share a binary.
+func (s HarnessSet) MatchBinary(token string) (Harness, bool) {
+	for _, name := range s.Names() {
+		if h := s[name]; h.Binary() != "" && h.Binary() == token {
+			return h, true
+		}
+	}
+	return Harness{}, false
+}
+
+// QuoteArgs single-quotes each arg and joins them, for appending user
+// passthrough args to a rendered command that runs via `sh -c`.
+func QuoteArgs(args []string) string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(out, " ")
+}
+
 // MergeEnv layers maps left to right (rightmost wins).
 func MergeEnv(layers ...map[string]string) map[string]string {
 	out := map[string]string{}

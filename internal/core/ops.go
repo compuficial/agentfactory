@@ -41,6 +41,49 @@ type OpenRequest struct {
 	Env        map[string]string
 	Cmd        string
 	Service    bool
+	// ExtraArgs are appended verbatim to the rendered command — the
+	// frictionless launcher's passthrough (`af claude --model opus`).
+	ExtraArgs []string
+}
+
+// ResolveWorkDir expands ~, makes the path absolute, and verifies it's
+// an existing directory. Empty means the current working directory.
+func ResolveWorkDir(dir string) (string, error) {
+	if dir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", Errf(ExitRuntime, "resolve cwd: %v", err)
+		}
+		dir = cwd
+	}
+	abs, err := filepath.Abs(ExpandHome(dir))
+	if err != nil {
+		return "", Errf(ExitRuntime, "resolve workdir: %v", err)
+	}
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return "", Errf(ExitRuntime, "workdir %s does not exist or is not a directory", abs)
+	}
+	return abs, nil
+}
+
+// LiveMatch returns the most-recently-active live (non-terminal,
+// non-service) session with the given harness and workdir, or nil —
+// resume-or-start's lookup for the frictionless launcher.
+func (m *Manager) LiveMatch(harness, workDir string) (*AgentSession, error) {
+	sessions, err := m.Store.ListSessions(false)
+	if err != nil {
+		return nil, err
+	}
+	var best *AgentSession
+	for _, s := range sessions {
+		if s.Service || s.Harness != harness || s.WorkDir != workDir {
+			continue
+		}
+		if best == nil || s.LastActive.After(best.LastActive) {
+			best = s
+		}
+	}
+	return best, nil
 }
 
 // Open resolves definition + overrides, validates, and starts a session
@@ -89,20 +132,9 @@ func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
 	}
 
 	// WorkDir: default cwd; resolved to absolute; must exist.
-	workDir := def.WorkDir
-	if workDir == "" {
-		workDir, err = os.Getwd()
-		if err != nil {
-			return nil, Errf(ExitRuntime, "resolve cwd: %v", err)
-		}
-	}
-	workDir = ExpandHome(workDir)
-	workDir, err = filepath.Abs(workDir)
+	workDir, err := ResolveWorkDir(def.WorkDir)
 	if err != nil {
-		return nil, Errf(ExitRuntime, "resolve workdir: %v", err)
-	}
-	if fi, err := os.Stat(workDir); err != nil || !fi.IsDir() {
-		return nil, Errf(ExitRuntime, "workdir %s does not exist or is not a directory", workDir)
+		return nil, err
 	}
 	def.WorkDir = workDir
 
@@ -116,6 +148,9 @@ func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
 	command, err := RenderCommand(harness, def, filesDir)
 	if err != nil {
 		return nil, err
+	}
+	if len(req.ExtraArgs) > 0 {
+		command += " " + QuoteArgs(req.ExtraArgs)
 	}
 
 	// Name: --name > definition name > harness name; suffix on live collision.

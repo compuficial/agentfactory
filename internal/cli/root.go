@@ -23,19 +23,44 @@ var (
 
 // NewRoot builds the af command tree.
 func NewRoot() *cobra.Command {
+	var opts launchOpts
 	root := &cobra.Command{
-		Use:           "af",
-		Short:         "AgentFactory: a local-first agent session manager on tmux",
+		Use:   "af [flags] <agent|command> [agent args...]",
+		Short: "AgentFactory: a local-first agent session manager on tmux",
+		Long: `AgentFactory manages terminal AI agents as tmux sessions.
+
+Run a subcommand (af status, af open, ...), or launch an agent directly:
+'af claude' opens (or resumes) a claude session in the current directory
+and attaches. Anything after the agent name is passed to it verbatim
+('af claude --model opus'); af's own flags go before it ('af --new claude').`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.ArbitraryArgs, // unknown subcommands reach RunE for an exit-2 error
+		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			return core.Errf(core.ExitUsage, "unknown command %q, see 'af --help'", args[0])
+			// args[0] is not a known subcommand (cobra would have
+			// dispatched); treat it as a frictionless agent launch.
+			app, err := newApp(cmd)
+			if err != nil {
+				return err
+			}
+			sess, _, err := resolveLaunch(app, args[0], args[1:], opts)
+			if err != nil {
+				app.Close()
+				return err
+			}
+			app.Close() // release the DB before exec replaces the process
+			return app.Backend.Attach(sess.ID)
 		},
 	}
+	// Flags after the agent name belong to the agent, not af, so stop
+	// parsing af flags at the first positional.
+	root.Flags().SetInterspersed(false)
+	root.Flags().BoolVar(&opts.forceNew, "new", false, "force a new agent session instead of resuming an existing one")
+	root.Flags().StringVarP(&opts.workDir, "workdir", "C", "", "working directory for the agent (default: current)")
+	root.Flags().StringVar(&opts.name, "name", "", "session name (default: <agent>-<dir>)")
 	root.PersistentFlags().String("socket", "", "tmux socket name (default: af)")
 	root.PersistentFlags().String("data-dir", "", "db + logs directory (default: ~/.local/share/agentfactory)")
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
