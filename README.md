@@ -7,6 +7,7 @@ Daemonless, local-first, built on tmux.**
 
 [![CI](https://github.com/compuficial/agentfactory/actions/workflows/ci.yml/badge.svg)](https://github.com/compuficial/agentfactory/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/compuficial/agentfactory)](https://github.com/compuficial/agentfactory/releases)
+[![Stars](https://img.shields.io/github/stars/compuficial/agentfactory?style=flat&logo=github)](https://github.com/compuficial/agentfactory/stargazers)
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![Go 1.25+](https://img.shields.io/badge/go-1.25+-00ADD8?logo=go)
 ![Platform: Linux · macOS](https://img.shields.io/badge/platform-linux%20·%20macos-lightgrey)
