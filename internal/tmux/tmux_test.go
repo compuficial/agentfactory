@@ -122,13 +122,16 @@ func TestSendKeysRoundTrip(t *testing.T) {
 
 func TestDeadStatusHarvest(t *testing.T) {
 	b := testBackend(t)
-	sess := testSession(t, b, "ded001", "exit 7")
+	// Brief sleep before exiting: a payload that exits instantly can die
+	// before tmux finishes wiring up the pane's exit-status tracking, and
+	// then pane_dead_status is never captured (seen on tmux 3.4 under CI
+	// load). The exiter.sh fixture delays for the same reason.
+	sess := testSession(t, b, "ded001", "sleep 0.5; exit 7")
 
 	// remain-on-exit holds the dead pane so the exit code is readable.
-	// pane_dead can flip a beat before pane_dead_status is populated, so
-	// poll until a real status lands (code != -1) rather than trusting
-	// the first "dead" tick — that transient window is the -1 we'd
-	// otherwise read.
+	// pane_dead can also flip a beat before pane_dead_status populates, so
+	// poll until a real status lands (code != -1) rather than trusting the
+	// first "dead" tick.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		dead, code, err := b.DeadStatus(sess.ID)
