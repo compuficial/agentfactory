@@ -46,8 +46,16 @@ or steer each other. `af` exists to fix exactly that:
 
 Requires **tmux ≥ 3.2** on `PATH`. Linux first; macOS works.
 
-**Pre-built binaries** — grab the archive for your platform from
-[Releases](https://github.com/compuficial/agentfactory/releases), then
+```sh
+curl -fsSL agentfactory.sh/install.sh | sh
+```
+
+Downloads the release binary for your platform, verifies its checksum,
+and installs `af` to `~/.local/bin`
+([read it first](https://agentfactory.sh/install.sh) if you like).
+
+**Pre-built binaries** — or grab the archive for your platform from
+[Releases](https://github.com/compuficial/agentfactory/releases) and
 drop `af` somewhere on `PATH`.
 
 **From source** (Go 1.25+):
@@ -338,6 +346,10 @@ Suite design: [docs/testing.md](docs/testing.md).
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and
 [docs/architecture.md](docs/architecture.md) for the design.
 Coding agents: read [AGENTS.md](AGENTS.md).
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=compuficial/agentfactory&type=Date)](https://star-history.com/#compuficial/agentfactory&Date)
 
 ## License
 
