@@ -120,6 +120,23 @@ func TestSendKeysRoundTrip(t *testing.T) {
 	}
 }
 
+// The af server must enable mouse so the wheel reaches the agent TUI
+// (agents own their transcript scrollback; without this, scroll events
+// never make it to the app). See EnsureServer.
+func TestServerEnablesMouse(t *testing.T) {
+	b := testBackend(t)
+	if err := b.EnsureServer(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.run("show-options", "-g", "mouse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "on") {
+		t.Fatalf("af server must enable mouse for TUI scroll; got %q", out)
+	}
+}
+
 func TestDeadStatusHarvest(t *testing.T) {
 	b := testBackend(t)
 	// Brief sleep before exiting: a payload that exits instantly can die

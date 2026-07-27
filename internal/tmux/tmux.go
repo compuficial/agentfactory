@@ -109,6 +109,7 @@ func (b *Backend) EnsureServer() error {
 		{"set-option", "-s", "exit-empty", "off"},    // server survives zero sessions
 		{"set-option", "-g", "remain-on-exit", "on"}, // dead panes persist for exit-code harvest
 		{"set-option", "-g", "status", "off"},
+		{"set-option", "-g", "mouse", "on"}, // forward wheel/scroll to the agent TUI (it owns its own transcript scrollback)
 		{"set-option", "-g", "default-terminal", "tmux-256color"},
 		{"set-option", "-g", "history-limit", "50000"},
 		{"set-option", "-g", "default-shell", "/bin/sh"}, // payloads run via `sh -c`, not the user's login shell
