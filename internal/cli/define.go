@@ -17,6 +17,7 @@ func newDefineCmd() *cobra.Command {
 		envKVs    []string
 		configKVs []string
 		cmdStr    string
+		fromRef   string
 		service   bool
 		quiet     bool
 		open      bool
@@ -51,6 +52,16 @@ func newDefineCmd() *cobra.Command {
 				}
 			} else if core.ExitCode(err) != core.ExitNotFound {
 				return err
+			}
+			// --from seeds the definition from a live session's config
+			// (harness/model/workdir/env/cmd); explicit flags below still
+			// win, so you can capture-then-tweak in one command.
+			if fromRef != "" {
+				sess, err := app.Manager.ResolveOne(fromRef)
+				if err != nil {
+					return err
+				}
+				def.SeedFromSession(sess)
 			}
 			if cmdStr != "" {
 				def.Harness = "custom"
@@ -108,6 +119,7 @@ func newDefineCmd() *cobra.Command {
 	c.Flags().StringArrayVarP(&envKVs, "env", "e", nil, "environment K=V (repeatable)")
 	c.Flags().StringArrayVar(&configKVs, "config", nil, "harness-specific config K=V (repeatable)")
 	c.Flags().StringVar(&cmdStr, "cmd", "", "shorthand: harness=custom with this command")
+	c.Flags().StringVar(&fromRef, "from", "", "seed fields from an existing session (name or id)")
 	c.Flags().BoolVar(&service, "service", false, "definitions launch as service sessions")
 	c.Flags().BoolVar(&open, "open", false, "immediately open a session from the definition")
 	c.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress non-essential output")

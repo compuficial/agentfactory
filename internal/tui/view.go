@@ -269,7 +269,7 @@ func (m *model) viewFooter() string {
 	if m.flash != "" && time.Now().Before(m.flashExpiry) {
 		return flashStyle.Render(firstLines(m.flash, 5, m.width))
 	}
-	return hints("j/k", "move", "a", "attach", "o", "open", "x", "close", "X", "kill",
+	return hints("j/k", "move", "a", "attach", "o", "open", "s", "save", "x", "close", "X", "kill",
 		"l", "logs", "enter", "detail", ":", "cmd", "?", "help", "q", "quit")
 }
 
@@ -436,6 +436,7 @@ func (m *model) viewHelp() string {
 		{"enter", "session detail (metadata, env, recent log)"},
 		{"a", "attach to the selected session (detach: C-b d; inside tmux: C-b C-b d)"},
 		{"o", "open a session from a definition (d deletes one)"},
+		{"s", "save the selected session as a definition"},
 		{"x", "close the selected session (graceful, y/n)"},
 		{"X", "kill the selected session (immediate, y/n)"},
 		{"l", "logs view (f toggles follow)"},

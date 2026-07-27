@@ -287,6 +287,33 @@ func TestDashboardPicker(t *testing.T) {
 	}, "picker opens the chosen definition")
 }
 
+func TestDashboardSaveDefinition(t *testing.T) {
+	deps := testDeps(t)
+	if _, err := deps.Manager.Open(core.OpenRequest{Cmd: "sleep 60", Name: "savory"}); err != nil {
+		t.Fatal(err)
+	}
+	m := tui.NewTestModel(deps)
+	m.Send(tea.WindowSizeMsg{Width: 100, Height: 30})
+	waitTUI(t, m, func() bool { return len(m.Sessions()) == 1 }, "session loads into the list")
+
+	// 's' prefills the command bar with an editable define --from command.
+	m.Send(key("s"))
+	if !m.InCommandMode() {
+		t.Fatalf("'s' should enter the command bar:\n%s", m.View())
+	}
+	if view := m.View(); !strings.Contains(view, "define savory --from") {
+		t.Fatalf("'s' should prefill 'define <name> --from <id>':\n%s", view)
+	}
+
+	// Running it saves the session's config as a definition.
+	m.Send(key("enter"))
+	waitTUI(t, m, func() bool {
+		defs, _ := deps.Store.ListDefinitions()
+		return len(defs) == 1 && defs[0].Name == "savory" &&
+			defs[0].Harness == "custom" && defs[0].Config["cmd"] == "sleep 60"
+	}, "the prefilled command saves the definition")
+}
+
 func TestDashboardDeleteDefinition(t *testing.T) {
 	deps := testDeps(t)
 	for _, n := range []string{"alpha", "beta"} { // ListDefinitions orders by name

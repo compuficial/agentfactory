@@ -186,8 +186,8 @@ func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
 	logPath := filepath.Join(logDir, id+".log")
 
 	env := MergeEnv(harness.Env, def.Env, req.Env)
-	env["AF_SESSION_ID"] = id
-	env["AF_SESSION_NAME"] = name
+	env[EnvSessionID] = id
+	env[EnvSessionName] = name
 
 	startedAt := now()
 	sess := &AgentSession{

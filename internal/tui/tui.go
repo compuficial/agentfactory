@@ -359,6 +359,18 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			defs, err := deps.Store.ListDefinitions()
 			return defsMsg{defs: defs, err: err}
 		}
+	case "s":
+		// Save the selected session as a reusable definition: prefill
+		// the command bar with the equivalent `define ... --from` so it
+		// runs through the same path as the CLI and the name stays
+		// editable before you commit.
+		if s := m.selected(); s != nil {
+			m.input.SetValue(fmt.Sprintf("define %s --from %s", s.Name, s.ID))
+			m.input.CursorEnd()
+			m.input.Focus()
+			m.mode = modeCommand
+			return m, textinput.Blink
+		}
 	case "x":
 		if s := m.selected(); s != nil && !s.Status.Terminal() {
 			m.confirmVerb, m.confirmSess = "close", s

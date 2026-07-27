@@ -855,6 +855,42 @@ func TestMatchBinary(t *testing.T) {
 	}
 }
 
+func TestSeedFromSession(t *testing.T) {
+	sess := &AgentSession{
+		Name: "claude-proj", Harness: "claude-code", Model: "opus",
+		WorkDir: "/home/x/proj", Service: true, Command: "claude --model opus",
+		Env: map[string]string{"FOO": "bar", EnvSessionID: "abc123", EnvSessionName: "claude-proj"},
+	}
+	def := &AgentDefinition{Name: "keepme"}
+	def.SeedFromSession(sess)
+
+	if def.Name != "keepme" {
+		t.Fatalf("name must be preserved, got %q", def.Name)
+	}
+	if def.Harness != "claude-code" || def.Model != "opus" || def.WorkDir != "/home/x/proj" || !def.Service {
+		t.Fatalf("launch fields not copied: %+v", def)
+	}
+	if def.Env["FOO"] != "bar" {
+		t.Fatalf("user env not carried over: %v", def.Env)
+	}
+	if _, ok := def.Env[EnvSessionID]; ok {
+		t.Fatal("per-session AF_SESSION_ID must be dropped")
+	}
+	if _, ok := def.Env[EnvSessionName]; ok {
+		t.Fatal("per-session AF_SESSION_NAME must be dropped")
+	}
+	if def.Config["cmd"] != "" {
+		t.Fatalf("non-custom harness must not capture a command, got %q", def.Config["cmd"])
+	}
+
+	// A custom session captures its exact command as config cmd.
+	cd := &AgentDefinition{Name: "c"}
+	cd.SeedFromSession(&AgentSession{Harness: "custom", Command: "sleep 300"})
+	if cd.Harness != "custom" || cd.Config["cmd"] != "sleep 300" {
+		t.Fatalf("custom command not captured: %+v", cd)
+	}
+}
+
 func TestQuoteArgs(t *testing.T) {
 	if got := QuoteArgs([]string{"--model", "opus", "write a poem"}); got != `'--model' 'opus' 'write a poem'` {
 		t.Fatalf("got %q", got)

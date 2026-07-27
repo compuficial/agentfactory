@@ -34,6 +34,41 @@ type AgentDefinition struct {
 	Service bool              `json:"service"`
 }
 
+// Per-session environment variables af injects at open time. They
+// identify the specific session, so they must never be captured into a
+// reusable definition (see SeedFromSession).
+const (
+	EnvSessionID   = "AF_SESSION_ID"
+	EnvSessionName = "AF_SESSION_NAME"
+)
+
+// SeedFromSession copies a live session's launch configuration onto the
+// definition: harness, model, workdir, service, the merged env (minus
+// the per-session vars af injects), and — for a custom session — the
+// exact command. Shared by `af define --from` and the dashboard's
+// save-as-definition action so both capture identical fields.
+func (d *AgentDefinition) SeedFromSession(s *AgentSession) {
+	d.Harness = s.Harness
+	d.Model = s.Model
+	d.WorkDir = s.WorkDir
+	d.Service = s.Service
+	if d.Env == nil {
+		d.Env = map[string]string{}
+	}
+	for k, v := range s.Env {
+		if k == EnvSessionID || k == EnvSessionName {
+			continue
+		}
+		d.Env[k] = v
+	}
+	if s.Harness == "custom" {
+		if d.Config == nil {
+			d.Config = map[string]string{}
+		}
+		d.Config["cmd"] = s.Command
+	}
+}
+
 // Status is a session's lifecycle state (spec §7.1).
 type Status string
 
