@@ -11,7 +11,8 @@ import (
 )
 
 // Builtins returns the compiled-in harnesses: the four major agent
-// CLIs plus "custom" for anything else. Users can override any of
+// CLIs, a generic "agent" that runs whatever `agent` binary is on
+// PATH, plus "custom" for anything else. Users can override any of
 // these (or add more) via config; same name wins.
 func Builtins() map[string]Harness {
 	return map[string]Harness{
@@ -71,6 +72,16 @@ func Builtins() map[string]Harness {
 		"opencode": {
 			Name:        "opencode",
 			CommandTmpl: `opencode{{if .Model}} --model {{.Model}}{{end}}`,
+			Env:         map[string]string{},
+			QuitKeys:    []string{"/exit"},
+		},
+		// Generic launcher for whatever `agent` resolves to on the
+		// machine (e.g. a symlink to grok, cursor-agent, ...). Lets
+		// `af agent` Just Work when the user's agent CLI installs as
+		// `agent`; falls back to "not on PATH" when it doesn't.
+		"agent": {
+			Name:        "agent",
+			CommandTmpl: `agent{{if .Model}} --model {{.Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{"/exit"},
 		},
