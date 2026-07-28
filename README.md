@@ -115,6 +115,7 @@ locked config — your personal tmux and `.tmux.conf` are never touched.
 | `codex` | `codex [--model <m>]` | `/quit` |
 | `grok` | `grok [--model <m>]` | `/exit` |
 | `opencode` | `opencode [--model <m>]` | `/exit` |
+| `cursor-agent` | `cursor-agent [--model <m>]` (Cursor CLI) | SIGTERM |
 | `agent` | `agent [--model <m>]` — whatever binary named `agent` is on your `PATH` | `/exit` |
 | `custom` | whatever `--cmd` says | signal-only |
 
@@ -123,7 +124,9 @@ The `--settings` flag loads the generated hooks file that reports
 
 The `agent` harness is generic: it launches whatever binary named
 `agent` sits on your `PATH`, so `af agent` works out of the box when
-your CLI installs itself as `agent`.
+your CLI installs itself as `agent`. Cursor's CLI, for instance,
+installs both `agent` and `cursor-agent` — use the `cursor-agent`
+harness to launch it explicitly when `agent` is taken by another tool.
 
 `af` never talks to models — harnesses do. `--model` is passed through
 untouched. A harness is pure data (a command template, env, quit keys,

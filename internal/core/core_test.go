@@ -847,6 +847,9 @@ func TestMatchBinary(t *testing.T) {
 	if h, ok := set.MatchBinary("agent"); !ok || h.Name != "agent" {
 		t.Fatalf("agent -> %v/%v, want agent", h.Name, ok)
 	}
+	if h, ok := set.MatchBinary("cursor-agent"); !ok || h.Name != "cursor-agent" {
+		t.Fatalf("cursor-agent -> %v/%v, want cursor-agent", h.Name, ok)
+	}
 	if _, ok := set.MatchBinary("nope"); ok {
 		t.Fatal("nope must not match")
 	}

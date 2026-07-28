@@ -10,10 +10,10 @@ import (
 	"text/template"
 )
 
-// Builtins returns the compiled-in harnesses: the four major agent
-// CLIs, a generic "agent" that runs whatever `agent` binary is on
-// PATH, plus "custom" for anything else. Users can override any of
-// these (or add more) via config; same name wins.
+// Builtins returns the compiled-in harnesses: the major agent CLIs, a
+// generic "agent" that runs whatever `agent` binary is on PATH, plus
+// "custom" for anything else. Users can override any of these (or add
+// more) via config; same name wins.
 func Builtins() map[string]Harness {
 	return map[string]Harness{
 		"claude-code": {
@@ -74,6 +74,17 @@ func Builtins() map[string]Harness {
 			CommandTmpl: `opencode{{if .Model}} --model {{.Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{"/exit"},
+		},
+		// Cursor's CLI installs two symlinks to the same binary: `agent`
+		// (primary, matched by the generic harness above) and
+		// `cursor-agent` (legacy). This targets `cursor-agent` so it
+		// launches Cursor even when `agent` points elsewhere. Cursor has
+		// no documented slash-exit, so close falls through to SIGTERM.
+		"cursor-agent": {
+			Name:        "cursor-agent",
+			CommandTmpl: `cursor-agent{{if .Model}} --model {{.Model}}{{end}}`,
+			Env:         map[string]string{},
+			QuitKeys:    []string{},
 		},
 		// Generic launcher for whatever `agent` resolves to on the
 		// machine (e.g. a symlink to grok, cursor-agent, ...). Lets
