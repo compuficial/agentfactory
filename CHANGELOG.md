@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries are generated from [Conventional Commits](https://www.conventionalcommits.org/)
 by [release-please](https://github.com/googleapis/release-please).
 
+## [0.3.0](https://github.com/compuficial/agentfactory/compare/v0.2.0...v0.3.0) (2026-07-28)
+
+
+### Added
+
+* add "agent" harness that runs the machine's agent binary ([1865dca](https://github.com/compuficial/agentfactory/commit/1865dcaaec2ba9e0a0a830f55347d6976ca9f07c))
+* add cursor-agent harness for the Cursor CLI ([af9c22c](https://github.com/compuficial/agentfactory/commit/af9c22cab2a9ec0c33ec2951df29abd82fd042e3))
+* save a running session as a definition ([8baebc3](https://github.com/compuficial/agentfactory/commit/8baebc36dbc56b712ee5f8c795252ec5dac5a5b4))
+
+
+### Fixed
+
+* enable tmux mouse so scrolling reaches the agent TUI ([96287ee](https://github.com/compuficial/agentfactory/commit/96287ee930edc4fc0b91d8f9380f28becc4c9bcd))
+
 ## [0.2.0](https://github.com/compuficial/agentfactory/compare/v0.1.0...v0.2.0) (2026-07-24)
 
 
