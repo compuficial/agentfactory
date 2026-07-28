@@ -1,9 +1,9 @@
 # AgentFactory
 
-**AgentFactory is a session manager for agents — Claude Code, Codex,
-Grok, OpenCode, or anything else: identity, lifecycle, live status,
-agent-to-agent coordination, and one dashboard over all of them.
-Daemonless, local-first, built on tmux.**
+**AgentFactory is an agent multiplexer built on tmux — Claude Code,
+Codex, Grok, OpenCode, or anything else: identity, lifecycle, live
+status, agent-to-agent coordination, and one dashboard over all of
+them. Daemonless, local-first.**
 
 [![CI](https://github.com/compuficial/agentfactory/actions/workflows/ci.yml/badge.svg)](https://github.com/compuficial/agentfactory/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/compuficial/agentfactory)](https://github.com/compuficial/agentfactory/releases)
