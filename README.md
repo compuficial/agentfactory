@@ -83,7 +83,7 @@ af --new claude           # force a fresh session (af's own flags go before the 
 the current directory and drops you straight in — as low-friction as
 running `claude` directly, but now it's tracked, survives detach, and
 resumes with the same command. Works for any harness binary on your PATH
-(`af codex`, `af grok`, `af opencode`). Detach with `C-b d`; you're back
+(`af codex`, `af grok`, `af opencode`, `af agent`). Detach with `C-b d`; you're back
 at your shell and the session keeps running.
 
 The explicit form is always there when you want control:
@@ -115,10 +115,15 @@ locked config — your personal tmux and `.tmux.conf` are never touched.
 | `codex` | `codex [--model <m>]` | `/quit` |
 | `grok` | `grok [--model <m>]` | `/exit` |
 | `opencode` | `opencode [--model <m>]` | `/exit` |
+| `agent` | `agent [--model <m>]` — whatever binary named `agent` is on your `PATH` | `/exit` |
 | `custom` | whatever `--cmd` says | signal-only |
 
 The `--settings` flag loads the generated hooks file that reports
 `awaiting-input` — see [docs/detection.md](docs/detection.md).
+
+The `agent` harness is generic: it launches whatever binary named
+`agent` sits on your `PATH`, so `af agent` works out of the box when
+your CLI installs itself as `agent`.
 
 `af` never talks to models — harnesses do. `--model` is passed through
 untouched. A harness is pure data (a command template, env, quit keys,
