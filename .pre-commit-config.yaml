@@ -1,0 +1,20 @@
+# https://pre-commit.com
+# Install: make hooks  (or ./scripts/init.sh when pre-commit is available)
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  - repo: local
+    hooks:
+      - id: make-precommit
+        name: make precommit
+        entry: make precommit
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -13,12 +13,15 @@ built on tmux. Go CLI + Bubble Tea TUI. Design rationale:
 
 ```sh
 make build                 # build ./af
-go test ./... -race        # full suite; needs tmux >= 3.2 installed
-go vet ./...               # must be clean
-gofmt -l .                 # must print nothing
+make precommit             # the gate: tidy + misspell + golangci-lint (--fix) + go test -race
+make ci                    # precommit (report-only lint) + govulncheck + crossbuild + clean tree
 make cover                 # coverage summary
 make fuzz                  # byte-parser fuzzers (~20s)
 ```
+
+Run `make precommit` before claiming work done (tests need tmux >= 3.2
+installed). CI runs the same gates plus the test matrix on Linux and
+macOS. Never add `//nolint` or disable linters to pass — fix the code.
 
 Suite design and how to extend it: [docs/testing.md](docs/testing.md).
 

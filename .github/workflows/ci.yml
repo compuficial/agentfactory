@@ -9,6 +9,8 @@ permissions:
   contents: read
 
 jobs:
+  # Quality gates (golangci-lint, misspell, govulncheck, crossbuild) —
+  # tools pinned in tools/go.mod, run via `go tool -modfile`.
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -16,8 +18,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@2025.1 ./...
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+      - name: go mod tidy (main + tools) leaves no diff
+        run: make mod && git diff --exit-code
+      - name: misspell (markdown)
+        run: make spell
+      - name: golangci-lint
+        run: make lint LINT_FLAGS=
+      - name: govulncheck
+        run: make vuln
+      - name: crossbuild smoke
+        run: make crossbuild
 
   test:
     strategy:

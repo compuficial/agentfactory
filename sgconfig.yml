@@ -1,0 +1,4 @@
+# ast-grep project config — https://ast-grep.github.io/
+# Add YAML rules under rules/ and run: ast-grep scan
+ruleDirs:
+  - rules

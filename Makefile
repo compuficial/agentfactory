@@ -19,7 +19,8 @@ LDFLAGS  = -X agentfactory.sh/af/internal/cli.Version=$(VERSION) \
            -X agentfactory.sh/af/internal/cli.Commit=$(COMMIT)
 
 .PHONY: all help build install uninstall fresh reset test vet fmt tidy clean \
-        agent-tools agent-tools-check agent-skills agent-skills-check
+        agent-tools agent-tools-check agent-skills agent-skills-check \
+        precommit ci mod spell lint vuln crossbuild diff hooks
 
 all: build
 
@@ -79,6 +80,38 @@ agent-skills: ## Install mattpocock/skills + obra/superpowers (global)
 
 agent-skills-check: ## List installed agent skills
 	./scripts/setup-agent-skills.sh --check
+
+# --- Quality gates: golangci-lint, misspell, govulncheck (pinned in tools/go.mod) ---
+TOOLMOD    := -modfile=tools/go.mod
+LINT_FLAGS ?= --fix
+
+precommit: mod spell lint test ## Local gate: tidy + spell + lint(fix) + test
+
+ci: LINT_FLAGS =
+ci: precommit vuln crossbuild diff ## CI gate: precommit (report-only) + vuln + crossbuild + clean tree
+
+mod: ## go mod tidy (main + tools modules)
+	go mod tidy
+	go -C tools mod tidy
+
+spell: ## misspell markdown files (US locale)
+	@find . -name '*.md' ! -path './.git/*' -exec go tool $(TOOLMOD) misspell -error -locale=US {} +
+
+lint: ## golangci-lint (fixes locally; report-only under make ci)
+	go tool $(TOOLMOD) golangci-lint run $(LINT_FLAGS) ./...
+
+vuln: ## govulncheck
+	go tool $(TOOLMOD) govulncheck ./...
+
+crossbuild: ## cross-compile smoke for release targets (linux/darwin arm64)
+	GOOS=darwin GOARCH=arm64 go build ./...
+	GOOS=linux  GOARCH=arm64 go build ./...
+
+diff: ## fail if the working tree is dirty
+	@res=$$(git status --porcelain); if [ -n "$$res" ]; then echo "$$res"; exit 1; fi
+
+hooks: ## install pre-commit + commit-msg hooks
+	pre-commit install --hook-types pre-commit --hook-types commit-msg
 
 clean: ## Remove local build artifacts
 	rm -f $(BINARY) cover.out
