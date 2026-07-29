@@ -11,7 +11,7 @@ func newDashboardCmd() *cobra.Command {
 		Use:   "dashboard",
 		Short: "Launch the live TUI dashboard",
 		Args:  exactArgs(0),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := refuseInsideSession("dashboard"); err != nil {
 				return err
 			}

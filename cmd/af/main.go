@@ -1,3 +1,5 @@
+// Command af is the AgentFactory CLI: main() only builds the cobra
+// root (internal/cli) and maps errors to the exit-code contract.
 package main
 
 import (

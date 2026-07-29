@@ -8,6 +8,9 @@ import (
 	"agentfactory.sh/af/internal/core"
 )
 
+// signal takes exactly <session> and <state>.
+const signalArgCount = 2
+
 func newSignalCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "signal <session> <state>",
@@ -16,7 +19,7 @@ func newSignalCmd() *cobra.Command {
 af signal "$AF_SESSION_ID" awaiting-input when it blocks on the user;
 an agent calls af signal "$AF_SESSION_ID" done when its task is
 complete. The next observed output clears the state automatically.`,
-		Args: exactArgs(2),
+		Args: exactArgs(signalArgCount),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state := core.Status(args[1])
 			if !state.Sticky() {

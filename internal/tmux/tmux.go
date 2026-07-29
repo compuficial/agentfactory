@@ -5,6 +5,8 @@ package tmux
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -22,6 +24,12 @@ import (
 // MinVersion is the oldest supported tmux (needs new-session -e and
 // pane_dead_status).
 const MinVersion = "3.2"
+
+// setOption is the tmux subcommand used to apply the locked server config.
+const setOption = "set-option"
+
+// gatePerm: the payload-gate file is same-user IPC; nothing else reads it.
+const gatePerm = 0o600
 
 // Backend is the tmux implementation of core.SessionBackend.
 type Backend struct {
@@ -51,7 +59,7 @@ func paneTarget(id string) string { return "=" + sessionName(id) + ":" }
 // happens to start the server.
 func (b *Backend) cmd(args ...string) *exec.Cmd {
 	full := append([]string{"-L", b.Socket, "-f", "/dev/null"}, args...)
-	return exec.Command("tmux", full...)
+	return exec.CommandContext(context.Background(), "tmux", full...)
 }
 
 func (b *Backend) run(args ...string) (string, error) {
@@ -60,7 +68,7 @@ func (b *Backend) run(args ...string) (string, error) {
 	c.Stderr = &stderr
 	out, err := c.Output()
 	if err != nil {
-		return string(out), fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return string(out), fmt.Errorf("tmux %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return string(out), nil
 }
@@ -68,7 +76,7 @@ func (b *Backend) run(args ...string) (string, error) {
 // CheckTmux verifies the tmux binary exists and is >= MinVersion.
 // Returns the version string. Failures are exit-4 environment errors.
 func CheckTmux() (string, error) {
-	out, err := exec.Command("tmux", "-V").Output()
+	out, err := exec.CommandContext(context.Background(), "tmux", "-V").Output()
 	if err != nil {
 		return "", core.Errf(core.ExitEnv, "tmux not found on PATH (af requires tmux >= %s): %v", MinVersion, err)
 	}
@@ -106,13 +114,13 @@ func versionAtLeast(have, want string) bool {
 func (b *Backend) EnsureServer() error {
 	args := []string{"start-server"}
 	for _, opt := range [][]string{
-		{"set-option", "-s", "exit-empty", "off"},    // server survives zero sessions
-		{"set-option", "-g", "remain-on-exit", "on"}, // dead panes persist for exit-code harvest
-		{"set-option", "-g", "status", "off"},
-		{"set-option", "-g", "mouse", "on"}, // forward wheel/scroll to the agent TUI (it owns its own transcript scrollback)
-		{"set-option", "-g", "default-terminal", "tmux-256color"},
-		{"set-option", "-g", "history-limit", "50000"},
-		{"set-option", "-g", "default-shell", "/bin/sh"}, // payloads run via `sh -c`, not the user's login shell
+		{setOption, "-s", "exit-empty", "off"},    // server survives zero sessions
+		{setOption, "-g", "remain-on-exit", "on"}, // dead panes persist for exit-code harvest
+		{setOption, "-g", "status", "off"},
+		{setOption, "-g", "mouse", "on"}, // forward wheel/scroll to the agent TUI (it owns its own transcript scrollback)
+		{setOption, "-g", "default-terminal", "tmux-256color"},
+		{setOption, "-g", "history-limit", "50000"},
+		{setOption, "-g", "default-shell", "/bin/sh"}, // payloads run via `sh -c`, not the user's login shell
 	} {
 		args = append(args, ";")
 		args = append(args, opt...)
@@ -161,7 +169,7 @@ func (b *Backend) Create(sess *core.AgentSession) error {
 	if _, err := b.run("pipe-pane", "-t", paneTarget(sess.ID), "-o", "cat >> "+shellQuote(sess.LogPath)); err != nil {
 		return core.Errf(core.ExitRuntime, "attach log pipe: %v", err)
 	}
-	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+	if err := os.WriteFile(gate, nil, gatePerm); err != nil {
 		return core.Errf(core.ExitRuntime, "release payload gate: %v", err)
 	}
 	out, err := b.run("list-panes", "-t", paneTarget(sess.ID), "-F", "#{pane_pid}")
@@ -185,9 +193,11 @@ func (b *Backend) Create(sess *core.AgentSession) error {
 // it to manual via resize-window) before attaching, so the client's
 // real terminal size always wins on attach.
 func (b *Backend) attachArgv(id string) []string {
-	return []string{"tmux", "-L", b.Socket, "-f", "/dev/null",
+	return []string{
+		"tmux", "-L", b.Socket, "-f", "/dev/null",
 		"set-option", "-w", "-t", paneTarget(id), "window-size", "latest", ";",
-		"attach-session", "-t", target(id)}
+		"attach-session", "-t", target(id),
+	}
 }
 
 // AttachEnv is the environment for attach children: the current
@@ -195,7 +205,7 @@ func (b *Backend) attachArgv(id string) []string {
 // set, tmux refuses to attach ("sessions should be nested with care");
 // stripping it lets the nested attach work. The inner session then owns
 // the default prefix, so detaching from inside another tmux takes
-// C-b C-b d — the outer tmux forwards the doubled prefix inward.
+// C-b twice then d — the outer tmux forwards the doubled prefix inward.
 func AttachEnv() []string {
 	env := os.Environ()
 	out := env[:0:0]
@@ -218,7 +228,7 @@ func (b *Backend) Attach(id string) error {
 		return core.Errf(core.ExitEnv, "tmux not found: %v", err)
 	}
 	if os.Getenv("TMUX") != "" {
-		fmt.Fprintln(os.Stderr, "af: nested inside tmux — detach with C-b C-b d (the doubled prefix reaches the inner session)")
+		fmt.Fprintln(os.Stderr, "af: nested inside tmux — detach with C-b twice then d (the doubled prefix reaches the inner session)")
 	}
 	return syscall.Exec(path, b.attachArgv(id), AttachEnv())
 }
@@ -296,7 +306,8 @@ func (b *Backend) IsAlive(id string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if _, ok := err.(*exec.ExitError); ok {
+	exitError := &exec.ExitError{}
+	if errors.As(err, &exitError) {
 		return false, nil // missing session or no server
 	}
 	return false, core.Errf(core.ExitEnv, "tmux has-session: %v", err)
@@ -309,12 +320,13 @@ func (b *Backend) DeadStatus(id string) (bool, int, error) {
 	if err != nil {
 		return false, 0, core.Errf(core.ExitRuntime, "read pane status: %v", err)
 	}
-	fields := strings.SplitN(strings.TrimSpace(out), "\t", 2)
+	const deadPaneFields = 2 // pane_dead \t pane_dead_status
+	fields := strings.SplitN(strings.TrimSpace(out), "\t", deadPaneFields)
 	if fields[0] != "1" {
 		return false, 0, nil
 	}
 	code := -1
-	if len(fields) == 2 {
+	if len(fields) == deadPaneFields {
 		if n, err := strconv.Atoi(strings.TrimSpace(fields[1])); err == nil {
 			code = n
 		}

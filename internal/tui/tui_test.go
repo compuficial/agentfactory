@@ -268,8 +268,10 @@ func TestDashboardCommandBar(t *testing.T) {
 
 func TestDashboardPicker(t *testing.T) {
 	deps := testDeps(t)
-	def := &core.AgentDefinition{Name: "pickme", Harness: "custom",
-		Config: map[string]string{"cmd": "sleep 60"}}
+	def := &core.AgentDefinition{
+		Name: "pickme", Harness: "custom",
+		Config: map[string]string{"cmd": "sleep 60"},
+	}
 	if err := deps.Store.PutDefinition(def); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +320,8 @@ func TestDashboardDeleteDefinition(t *testing.T) {
 	deps := testDeps(t)
 	for _, n := range []string{"alpha", "beta"} { // ListDefinitions orders by name
 		if err := deps.Store.PutDefinition(&core.AgentDefinition{
-			Name: n, Harness: "custom", Config: map[string]string{"cmd": "sleep 60"}}); err != nil {
+			Name: n, Harness: "custom", Config: map[string]string{"cmd": "sleep 60"},
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

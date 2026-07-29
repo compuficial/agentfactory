@@ -233,7 +233,7 @@ func TestDefineOpenAndMultiOpen(t *testing.T) {
 	}
 
 	// open several definitions at once.
-	if _, _, code := runAF(t, "define", "beta", "--cmd", script, "-q"); code != 0 {
+	if _, _, betaCode := runAF(t, "define", "beta", "--cmd", script, "-q"); betaCode != 0 {
 		t.Fatal("define beta failed")
 	}
 	out, errOut, code = runAF(t, "open", "alpha", "beta", "-q")
@@ -356,8 +356,8 @@ func TestStatusJSONGolden(t *testing.T) {
 		LogPath: "/data/logs/k3x9p2.log", StartedAt: started, LastActive: lastActive,
 		EndedAt: &ended, Metadata: map[string]string{},
 	}
-	if err := store.InsertSession(sess); err != nil {
-		t.Fatal(err)
+	if insertErr := store.InsertSession(sess); insertErr != nil {
+		t.Fatal(insertErr)
 	}
 	store.Close()
 

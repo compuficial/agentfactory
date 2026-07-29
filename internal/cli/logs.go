@@ -10,6 +10,13 @@ import (
 	"agentfactory.sh/af/internal/core"
 )
 
+const (
+	// defaultLogLines is how much history `af logs` prints by default.
+	defaultLogLines = 200
+	// followPoll is the tail -f polling cadence.
+	followPoll = 200 * time.Millisecond
+)
+
 func newLogsCmd() *cobra.Command {
 	var (
 		follow bool
@@ -55,35 +62,51 @@ func newLogsCmd() *cobra.Command {
 		},
 	}
 	c.Flags().BoolVarP(&follow, "follow", "f", false, "keep printing as output arrives")
-	c.Flags().IntVarP(&lines, "lines", "n", 200, "lines to print (0 = whole file)")
+	c.Flags().IntVarP(&lines, "lines", "n", defaultLogLines, "lines to print (0 = whole file)")
 	c.Flags().BoolVar(&raw, "raw", false, "print the raw byte stream (escape sequences included)")
 	return c
 }
 
 // followFile polls the log for growth (tail -f semantics; runs until
-// the process is interrupted).
+// the process is interrupted or the output stops accepting writes).
 func followFile(out io.Writer, path string, offset int64, raw bool) error {
 	for {
-		time.Sleep(200 * time.Millisecond)
-		fi, err := os.Stat(path)
-		if err != nil || fi.Size() <= offset {
+		time.Sleep(followPoll)
+		chunk := readChunk(path, offset)
+		if len(chunk) == 0 {
 			continue
 		}
-		f, err := os.Open(path)
-		if err != nil {
-			continue
+		offset += int64(len(chunk))
+		var writeErr error
+		if raw {
+			_, writeErr = out.Write(chunk)
+		} else {
+			_, writeErr = io.WriteString(out, core.SanitizeTerminal(chunk))
 		}
-		if _, err := f.Seek(offset, io.SeekStart); err == nil {
-			chunk, err := io.ReadAll(f)
-			if err == nil && len(chunk) > 0 {
-				offset += int64(len(chunk))
-				if raw {
-					out.Write(chunk)
-				} else {
-					io.WriteString(out, core.SanitizeTerminal(chunk))
-				}
-			}
+		if writeErr != nil {
+			return writeErr // output gone (closed pipe); stop following
 		}
-		f.Close()
 	}
+}
+
+// readChunk returns the log bytes past offset, or nil when the file
+// hasn't grown (or is briefly unreadable — the next poll retries).
+func readChunk(path string, offset int64) []byte {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() <= offset {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	if _, seekErr := f.Seek(offset, io.SeekStart); seekErr != nil {
+		return nil
+	}
+	chunk, err := io.ReadAll(f)
+	if err != nil {
+		return nil
+	}
+	return chunk
 }

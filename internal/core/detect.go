@@ -35,6 +35,13 @@ const detectLines = 40
 // choose, and Resolve never sees it).
 const UniversalDetect = "*"
 
+// Detect patterns shared between the universal fallback rules and
+// specific harnesses, so each literal lives in one place.
+const (
+	patDoYouWant      = `(?i)do you want`
+	patEscToInterrupt = `esc to interrupt`
+)
+
 // universalRules are the fallback patterns. Conservative on purpose: a
 // false awaiting-input poisons af wait, a missed one only delays it.
 var universalRules = DetectRules{
@@ -42,7 +49,7 @@ var universalRules = DetectRules{
 		`(?i)\((y/n|yes/no)\)`,
 		`(?i)\[(y/n|yes/no)\]`,
 		`(?i)press (enter|any key)`,
-		`(?i)do you want`,
+		patDoYouWant,
 		`(?i)would you like`,
 		`(?i)proceed\?`,
 		`❯ 1\.`, // numbered choice menus

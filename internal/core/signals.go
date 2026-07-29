@@ -16,11 +16,22 @@ import (
 // blocked — later events overwrite earlier ones.
 type SignalVerdict int
 
+// Protocol verdicts a delta's events can resolve to.
 const (
 	SignalNone      SignalVerdict = iota
 	SignalAttention               // bell / notification / prompt-input / turn end
 	SignalWorking                 // OSC 133;C — command running
 )
+
+// Control bytes the stream scanner recognizes.
+const (
+	bel byte = 0x07 // BEL — standalone bell or OSC terminator
+	esc byte = 0x1b // ESC — starts an OSC (ESC ]) or ST (ESC \)
+)
+
+// oscPrefixLen is the length of an OSC introducer (ESC ]); the body
+// starts that many bytes past the ESC.
+const oscPrefixLen = 2
 
 // StreamSignals is what ScanStreamEvents found in one delta.
 type StreamSignals struct {
@@ -66,13 +77,13 @@ func ScanStreamEvents(buf []byte, cfg *CompiledSignals) StreamSignals {
 	var out StreamSignals
 	for i := 0; i < len(buf); i++ {
 		switch buf[i] {
-		case 0x07: // standalone BEL
+		case bel: // standalone BEL
 			out.Verdict = SignalAttention
-		case 0x1b: // ESC
+		case esc: // ESC
 			if i+1 >= len(buf) || buf[i+1] != ']' {
 				continue // not an OSC; other escapes pass through
 			}
-			content, end, ok := parseOSC(buf, i+2)
+			content, end, ok := parseOSC(buf, i+oscPrefixLen)
 			i = end
 			if ok {
 				classifyOSC(content, cfg, &out)
@@ -92,9 +103,9 @@ func ScanStreamEvents(buf []byte, cfg *CompiledSignals) StreamSignals {
 func parseOSC(buf []byte, start int) (content string, next int, ok bool) {
 	for j := start; j < len(buf); j++ {
 		switch buf[j] {
-		case 0x07:
+		case bel:
 			return string(buf[start:j]), j, true
-		case 0x1b:
+		case esc:
 			if j+1 < len(buf) && buf[j+1] == '\\' {
 				return string(buf[start:j]), j + 1, true
 			}

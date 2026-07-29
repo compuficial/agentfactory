@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"agentfactory.sh/af/internal/config"
 	"agentfactory.sh/af/internal/core"
 	"agentfactory.sh/af/internal/tmux"
 )
@@ -28,74 +29,12 @@ func newDoctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "Check the af environment (tmux, socket, database, dirs)",
 		Args:  exactArgs(0),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig(cmd)
 			if err != nil {
 				return err
 			}
-			report := doctorReport{OK: true}
-			add := func(name string, ok bool, detail string) {
-				report.Checks = append(report.Checks, doctorCheck{Name: name, OK: ok, Detail: detail})
-				report.OK = report.OK && ok
-			}
-
-			// tmux present and >= 3.2
-			version, err := tmux.CheckTmux()
-			if err != nil {
-				add("tmux", false, err.Error())
-			} else {
-				add("tmux", true, "tmux "+version)
-			}
-
-			// af socket server reachable or creatable
-			backend := tmux.New(cfg.Socket, cfg.SendDelay.D())
-			if err == nil { // only meaningful with a working tmux
-				if serr := backend.EnsureServer(); serr != nil {
-					add("socket", false, serr.Error())
-				} else {
-					add("socket", true, fmt.Sprintf("tmux server on socket %q", cfg.Socket))
-				}
-			} else {
-				add("socket", false, "skipped: tmux unavailable")
-			}
-
-			// data + log dirs writable
-			logDir := filepath.Join(cfg.DataDir, "logs")
-			if derr := writableDir(logDir); derr != nil {
-				add("data_dir", false, derr.Error())
-			} else {
-				add("data_dir", true, cfg.DataDir+" writable")
-			}
-
-			// DB opens and schema version matches
-			store, serr := core.OpenStore(cfg.DataDir)
-			if serr != nil {
-				add("database", false, serr.Error())
-			} else {
-				defer store.Close()
-				dbPath := filepath.Join(cfg.DataDir, "agentfactory.db")
-				if have, want, verr := store.SchemaVersion(); verr != nil {
-					add("database", false, dbPath+": read schema version: "+verr.Error())
-				} else if have != want {
-					// Shape-compatible but versioned by another af build
-					// sharing this data dir: report, don't fail.
-					add("database", true, fmt.Sprintf("%s (schema version %d, this build writes %d — shape-compatible)", dbPath, have, want))
-				} else {
-					add("database", true, fmt.Sprintf("%s (schema version %d)", dbPath, have))
-				}
-			}
-
-			// reconciliation dry-run report (needs tmux and the DB)
-			if store != nil && err == nil {
-				detail, ok := dryRunReport(store, backend, cfg.DataDir)
-				add("reconciliation", ok, detail)
-			} else {
-				add("reconciliation", false, "skipped: needs tmux and database")
-			}
-
-			// fully resolved config (§9)
-			add("config", true, "resolved:\n"+cfg.Resolved())
-
+			report := runDoctorChecks(cfg)
 			if jsonMode {
 				if err := writeJSON(cmd, report); err != nil {
 					return err
@@ -119,12 +58,91 @@ func newDoctorCmd() *cobra.Command {
 	return c
 }
 
+// runDoctorChecks probes the environment (tmux, socket, dirs, DB,
+// reconciliation, config) and collects the results into one report.
+func runDoctorChecks(cfg *config.Config) doctorReport {
+	report := doctorReport{OK: true}
+	add := func(name string, ok bool, detail string) {
+		report.Checks = append(report.Checks, doctorCheck{Name: name, OK: ok, Detail: detail})
+		report.OK = report.OK && ok
+	}
+
+	// tmux present and >= 3.2
+	version, err := tmux.CheckTmux()
+	if err != nil {
+		add("tmux", false, err.Error())
+	} else {
+		add("tmux", true, "tmux "+version)
+	}
+
+	// af socket server reachable or creatable
+	backend := tmux.New(cfg.Socket, cfg.SendDelay.D())
+	if err == nil { // only meaningful with a working tmux
+		if serr := backend.EnsureServer(); serr != nil {
+			add("socket", false, serr.Error())
+		} else {
+			add("socket", true, fmt.Sprintf("tmux server on socket %q", cfg.Socket))
+		}
+	} else {
+		add("socket", false, "skipped: tmux unavailable")
+	}
+
+	// data + log dirs writable
+	logDir := filepath.Join(cfg.DataDir, "logs")
+	if derr := writableDir(logDir); derr != nil {
+		add("data_dir", false, derr.Error())
+	} else {
+		add("data_dir", true, cfg.DataDir+" writable")
+	}
+
+	// DB opens and schema version matches
+	store, serr := core.OpenStore(cfg.DataDir)
+	if serr != nil {
+		add("database", false, serr.Error())
+	} else {
+		defer store.Close()
+		addDatabaseCheck(add, store, cfg.DataDir)
+	}
+
+	// reconciliation dry-run report (needs tmux and the DB)
+	if store != nil && err == nil {
+		detail, ok := dryRunReport(store, backend, cfg.DataDir)
+		add("reconciliation", ok, detail)
+	} else {
+		add("reconciliation", false, "skipped: needs tmux and database")
+	}
+
+	// fully resolved config (§9)
+	add("config", true, "resolved:\n"+cfg.Resolved())
+	return report
+}
+
+// addDatabaseCheck reports whether the schema version matches this build.
+func addDatabaseCheck(add func(string, bool, string), store *core.Store, dataDir string) {
+	dbPath := filepath.Join(dataDir, "agentfactory.db")
+	if have, want, verr := store.SchemaVersion(); verr != nil {
+		add("database", false, dbPath+": read schema version: "+verr.Error())
+	} else if have != want {
+		// Shape-compatible but versioned by another af build
+		// sharing this data dir: report, don't fail.
+		add("database", true, fmt.Sprintf("%s (schema version %d, this build writes %d — shape-compatible)", dbPath, have, want))
+	} else {
+		add("database", true, fmt.Sprintf("%s (schema version %d)", dbPath, have))
+	}
+}
+
+// Probe permissions: same-user data dirs and a throwaway probe file.
+const (
+	probeDirPerm  = 0o750
+	probeFilePerm = 0o600
+)
+
 func writableDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, probeDirPerm); err != nil {
 		return err
 	}
 	probe := filepath.Join(dir, ".af-doctor-probe")
-	if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+	if err := os.WriteFile(probe, []byte("ok"), probeFilePerm); err != nil {
 		return err
 	}
 	return os.Remove(probe)

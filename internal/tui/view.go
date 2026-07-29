@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,23 +74,46 @@ func pad(s string, w int) string {
 	return s + strings.Repeat(" ", w-ansi.StringWidth(s))
 }
 
+// Fixed layout geometry shared by the view renderers.
+const (
+	panelBorderRows = 2  // top + bottom border lines of a panel box
+	panelCornerCols = 2  // the two corner cells of a border line
+	panelTrimCols   = 3  // corner + dash + space reserved beside a panel title
+	kvPairLen       = 2  // hints() consumes (key, description) pairs
+	flashMaxLines   = 5  // tallest transient footer before truncation
+	rowMarginCols   = 2  // leading margin of a session row
+	tableSepCols    = 6  // single spaces between the seven table columns
+	minWorkColW     = 8  // WORKDIR never collapses below this
+	minWrapCols     = 20 // narrowest sensible soft-wrap width
+	outerChromeRows = 2  // header line + footer hints line around a full-screen panel
+	minPanelRows    = 3  // a panel never collapses below borders + one content row
+	listChromeRows  = 3  // session list column header + top/bottom border
+	minListRows     = 4  // the session list never collapses below this (and the preview keeps as much)
+	baseListH       = 6  // floor of the 40%-of-body cap: chrome + a few rows
+	listCapNum      = 2  // the list is capped at listCapNum/listCapDen of the body (40%)
+	listCapDen      = 5
+	detailLogBytes  = 64 << 10
+	detailLogLines  = 20
+	helpKeyColW     = 15
+)
+
 // panel draws a btop-style box with the title embedded in the top
 // border. The box is exactly width × height cells (borders included);
 // height <= 0 sizes the box to its content.
 func panel(title string, lines []string, width, height int) string {
-	cw := max(1, width-4)
+	cw := max(1, width-panelChromeCols)
 	ch := len(lines)
 	if height > 0 {
-		ch = max(0, height-2)
+		ch = max(0, height-panelBorderRows)
 	}
 	t := " " + title + " "
 	tw := ansi.StringWidth(t)
-	if tw > max(0, width-3) {
-		t = ansi.Truncate(t, max(0, width-3), "…")
+	if tw > max(0, width-panelTrimCols) {
+		t = ansi.Truncate(t, max(0, width-panelTrimCols), "…")
 		tw = ansi.StringWidth(t)
 	}
 	var b strings.Builder
-	b.WriteString(borderStyle.Render("╭─") + t + borderStyle.Render(strings.Repeat("─", max(0, width-3-tw))+"╮") + "\n")
+	b.WriteString(borderStyle.Render("╭─") + t + borderStyle.Render(strings.Repeat("─", max(0, width-panelTrimCols-tw))+"╮") + "\n")
 	for i := range ch {
 		line := ""
 		if i < len(lines) {
@@ -97,14 +121,14 @@ func panel(title string, lines []string, width, height int) string {
 		}
 		b.WriteString(borderStyle.Render("│") + " " + pad(line, cw) + " " + borderStyle.Render("│") + "\n")
 	}
-	b.WriteString(borderStyle.Render("╰" + strings.Repeat("─", max(0, width-2)) + "╯"))
+	b.WriteString(borderStyle.Render("╰" + strings.Repeat("─", max(0, width-panelCornerCols)) + "╯"))
 	return b.String()
 }
 
 // hints renders a footer line of key/description pairs.
 func hints(kv ...string) string {
-	parts := make([]string, 0, len(kv)/2)
-	for i := 0; i+1 < len(kv); i += 2 {
+	parts := make([]string, 0, len(kv)/kvPairLen)
+	for i := 0; i+1 < len(kv); i += kvPairLen {
 		parts = append(parts, accentStyle.Render(kv[i])+" "+dimStyle.Render(kv[i+1]))
 	}
 	return strings.Join(parts, dimStyle.Render(" · "))
@@ -141,8 +165,8 @@ func (m *model) View() string {
 func (m *model) layout(footerH int) (listH, previewH int) {
 	body := m.height - 1 - footerH // minus header line
 	rows := max(1, len(m.sessions))
-	listH = min(rows+3, max(6, body*2/5)) // rows + column header + borders
-	listH = max(4, min(listH, body-4))
+	listH = min(rows+listChromeRows, max(baseListH, body*listCapNum/listCapDen)) // rows + column header + borders
+	listH = max(minListRows, min(listH, body-minListRows))
 	previewH = max(0, body-listH)
 	return listH, previewH
 }
@@ -153,7 +177,7 @@ func (m *model) layout(footerH int) (listH, previewH int) {
 // which is not worth rendering the footer twice to avoid.
 func (m *model) previewArea() (w, h int) {
 	_, previewH := m.layout(1)
-	return max(1, m.width-4), max(1, previewH-2)
+	return max(1, m.width-panelChromeCols), max(1, previewH-panelBorderRows)
 }
 
 // viewHeader is the top line: brand, socket, live status counts.
@@ -192,13 +216,13 @@ func (m *model) viewList() string {
 	footer := m.viewFooter()
 	footerH := strings.Count(footer, "\n") + 1
 	listH, previewH := m.layout(footerH)
-	cw := max(1, m.width-4)
+	cw := max(1, m.width-panelChromeCols)
 
 	var b strings.Builder
 	b.WriteString(m.viewHeader() + "\n")
 
 	listTitle := titleStyle.Render("sessions") + dimStyle.Render(fmt.Sprintf(" (%d)", len(m.sessions)))
-	b.WriteString(panel(listTitle, m.sessionRows(cw, max(1, listH-3)), m.width, listH) + "\n")
+	b.WriteString(panel(listTitle, m.sessionRows(cw, max(1, listH-listChromeRows)), m.width, listH) + "\n")
 
 	previewTitle := titleStyle.Render("preview")
 	var previewLines []string
@@ -207,7 +231,7 @@ func (m *model) viewList() string {
 	} else {
 		previewTitle += dimStyle.Render(fmt.Sprintf(" · %s (%s) · %s %s",
 			s.Name, s.ID, core.StatusLabel(s), core.Ago(s.LastActive)))
-		previewLines = lastLines(m.preview, max(1, previewH-2))
+		previewLines = lastLines(m.preview, max(1, previewH-panelBorderRows))
 	}
 	b.WriteString(panel(previewTitle, previewLines, m.width, previewH) + "\n")
 
@@ -219,8 +243,8 @@ func (m *model) viewList() string {
 // rows, windowed around the cursor.
 func (m *model) sessionRows(cw, visible int) []string {
 	nameW, harnW, modelW, statusW, lastW, upW := 16, 12, 10, 15, 9, 7
-	fixed := 2 + nameW + harnW + modelW + statusW + lastW + upW + 6
-	workW := max(8, cw-fixed)
+	fixed := rowMarginCols + nameW + harnW + modelW + statusW + lastW + upW + tableSepCols
+	workW := max(minWorkColW, cw-fixed)
 	lines := []string{headerStyle.Render("  " + pad("NAME", nameW) + " " + pad("HARNESS", harnW) + " " +
 		pad("MODEL", modelW) + " " + pad("STATUS", statusW) + " " + pad("LAST", lastW) + " " +
 		pad("UP", upW) + " " + pad("WORKDIR", workW))}
@@ -267,10 +291,10 @@ func (m *model) viewFooter() string {
 		}
 	}
 	if m.flash != "" && time.Now().Before(m.flashExpiry) {
-		return flashStyle.Render(firstLines(m.flash, 5, m.width))
+		return flashStyle.Render(firstLines(m.flash, flashMaxLines, m.width))
 	}
 	return hints("j/k", "move", "a", "attach", "o", "open", "s", "save", "x", "close", "X", "kill",
-		"l", "logs", "enter", "detail", ":", "cmd", "?", "help", "q", "quit")
+		"l", "logs", keyEnter, "detail", ":", "cmd", "?", "help", "q", "quit")
 }
 
 func firstLines(s string, n, width int) string {
@@ -293,7 +317,7 @@ func (m *model) viewDetail() string {
 		return m.viewList() // Update leaves detail mode on the next refresh
 	}
 	title := titleStyle.Render(s.Name) + dimStyle.Render(" · "+s.ID)
-	body := panel(title, strings.Split(m.detailVP.View(), "\n"), m.width, max(3, m.height-2))
+	body := panel(title, strings.Split(m.detailVP.View(), "\n"), m.width, max(minPanelRows, m.height-outerChromeRows))
 	return m.viewHeader() + "\n" + body + "\n" + hints("j/k", "scroll", "q/esc", "back")
 }
 
@@ -304,8 +328,8 @@ func (m *model) syncDetail() {
 	if s == nil {
 		return
 	}
-	m.detailVP.Width = max(1, m.width-4)
-	m.detailVP.Height = max(1, m.height-4)
+	m.detailVP.Width = max(1, m.width-panelChromeCols)
+	m.detailVP.Height = max(1, m.height-detailChromeRows)
 	m.detailVP.SetContent(strings.Join(m.detailLines(s), "\n"))
 }
 
@@ -314,7 +338,7 @@ func (m *model) syncDetail() {
 // value column instead of truncating; the viewport handles overflow.
 func (m *model) detailLines(s *core.AgentSession) []string {
 	const keyW = 13 // "%-12s" plus the separating space
-	valW := max(20, m.width-4-keyW)
+	valW := max(minWrapCols, m.width-panelChromeCols-keyW)
 	var lines []string
 	pair := func(k, v string) {
 		parts := wrapPlain(v, valW)
@@ -336,7 +360,7 @@ func (m *model) detailLines(s *core.AgentSession) []string {
 	pair("Command", s.Command)
 	pair("WorkDir", core.TildePath(s.WorkDir))
 	pair("PID", fmt.Sprintf("%d (pgid %d)", s.PID, s.PGID))
-	pair("Service", fmt.Sprintf("%v", s.Service))
+	pair("Service", strconv.FormatBool(s.Service))
 	pair("Log", core.TildePath(s.LogPath))
 	pair("Started", s.StartedAt.Local().Format(time.RFC3339)+" · up "+core.Uptime(s))
 	pair("LastActive", core.Ago(s.LastActive))
@@ -356,11 +380,11 @@ func (m *model) detailLines(s *core.AgentSession) []string {
 	for _, k := range sortedKeys(env) {
 		pair(k, maskEnvValue(k, env[k]))
 	}
-	lines = append(lines, "", headerStyle.Render("last 20 log lines"))
-	logs, _ := core.ReadLogTail(s.LogPath, 64<<10)
-	tail := strings.TrimRight(string(core.TailLines([]byte(logs), 20)), "\n")
+	lines = append(lines, "", headerStyle.Render(fmt.Sprintf("last %d log lines", detailLogLines)))
+	logs, _ := core.ReadLogTail(s.LogPath, detailLogBytes)
+	tail := strings.TrimRight(string(core.TailLines([]byte(logs), detailLogLines)), "\n")
 	for line := range strings.SplitSeq(tail, "\n") {
-		lines = append(lines, wrapPlain(line, max(20, m.width-4))...)
+		lines = append(lines, wrapPlain(line, max(minWrapCols, m.width-panelChromeCols))...)
 	}
 	return lines
 }
@@ -405,13 +429,13 @@ func (m *model) viewLogs() string {
 		followLabel = "follow on"
 	}
 	title := titleStyle.Render("logs") + dimStyle.Render(fmt.Sprintf(" · %s (%s) · ", name, id)) + accentStyle.Render(followLabel)
-	body := panel(title, strings.Split(m.logsVP.View(), "\n"), m.width, max(3, m.height-1))
+	body := panel(title, strings.Split(m.logsVP.View(), "\n"), m.width, max(minPanelRows, m.height-1))
 	return body + "\n" + hints("j/k", "scroll", "f", "toggle follow", "q/esc", "back")
 }
 
 func (m *model) viewPicker() string {
 	nameW, harnW, modelW := 20, 12, 12
-	cw := max(1, m.width-4)
+	cw := max(1, m.width-panelChromeCols)
 	lines := []string{headerStyle.Render("  " + pad("NAME", nameW) + " " + pad("HARNESS", harnW) + " " +
 		pad("MODEL", modelW) + " WORKDIR")}
 	for i, d := range m.defs {
@@ -427,14 +451,14 @@ func (m *model) viewPicker() string {
 		lines = append(lines, row)
 	}
 	return m.viewHeader() + "\n" + panel(titleStyle.Render("open from definition"), lines, m.width, 0) + "\n" +
-		hints("enter", "open", "d", "delete", "j/k", "move", "esc", "cancel")
+		hints(keyEnter, "open", "d", "delete", "j/k", "move", keyEsc, "cancel")
 }
 
 func (m *model) viewHelp() string {
 	keys := [][2]string{
 		{"j / k, arrows", "move selection"},
-		{"enter", "session detail (metadata, env, recent log)"},
-		{"a", "attach to the selected session (detach: C-b d; inside tmux: C-b C-b d)"},
+		{keyEnter, "session detail (metadata, env, recent log)"},
+		{"a", "attach to the selected session (detach: C-b d; inside tmux: C-b twice then d)"},
 		{"o", "open a session from a definition (d deletes one)"},
 		{"s", "save the selected session as a definition"},
 		{"x", "close the selected session (graceful, y/n)"},
@@ -446,7 +470,7 @@ func (m *model) viewHelp() string {
 	}
 	lines := []string{""}
 	for _, k := range keys {
-		lines = append(lines, "  "+accentStyle.Render(pad(k[0], 15))+" "+k[1])
+		lines = append(lines, "  "+accentStyle.Render(pad(k[0], helpKeyColW))+" "+k[1])
 	}
 	lines = append(lines, "",
 		dimStyle.Render("  the preview pane mirrors the selected session's live screen"),

@@ -48,7 +48,7 @@ func wireCompletions(root *cobra.Command) {
 }
 
 func completeSessions(all bool) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
-	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	return func(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
 		if len(args) > 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
@@ -72,7 +72,7 @@ func completeSessions(all bool) func(*cobra.Command, []string, string) ([]string
 
 // completeTerminalSessions suggests exited/failed sessions (af rm takes
 // several; names already on the line are dropped).
-func completeTerminalSessions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+func completeTerminalSessions(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
 	app, err := newStoreApp(cmd)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -99,7 +99,7 @@ func completeTerminalSessions(cmd *cobra.Command, args []string, toComplete stri
 
 // completeDefinitions suggests definition names; af open takes several,
 // so names already on the line are dropped from the suggestions.
-func completeDefinitions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+func completeDefinitions(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
 	app, err := newStoreApp(cmd)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -127,7 +127,7 @@ func completeDefinitions(cmd *cobra.Command, args []string, toComplete string) (
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
-func completeHarnesses(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+func completeHarnesses(cmd *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 	cfg, err := loadConfig(cmd)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp

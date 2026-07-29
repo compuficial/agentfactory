@@ -2,12 +2,20 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"agentfactory.sh/af/internal/core"
+)
+
+// tabwriter geometry shared by every column-aligned table the CLI prints.
+const (
+	tabMinWidth = 2
+	tabWidth    = 4
+	tabPadding  = 2
 )
 
 func newStatusCmd() *cobra.Command {
@@ -26,15 +34,14 @@ func newStatusCmd() *cobra.Command {
 			}
 			defer app.Close()
 			if len(args) == 1 {
-				sess, err := app.Manager.ResolveOne(args[0])
-				if err != nil {
-					return err
+				sess, resolveErr := app.Manager.ResolveOne(args[0])
+				if resolveErr != nil {
+					return resolveErr
 				}
 				if jsonMode {
 					return writeJSON(cmd, sess.JSON())
 				}
-				printSessionDetail(cmd, sess)
-				return nil
+				return printSessionDetail(cmd, sess)
 			}
 			sessions, err := app.Store.ListSessions(all)
 			if err != nil {
@@ -47,8 +54,7 @@ func newStatusCmd() *cobra.Command {
 				}
 				return writeJSON(cmd, out)
 			}
-			printSessionTable(cmd, sessions)
-			return nil
+			return printSessionTable(cmd, sessions)
 		},
 	}
 	c.Flags().BoolVar(&all, "all", false, "include exited/failed history")
@@ -56,8 +62,8 @@ func newStatusCmd() *cobra.Command {
 	return c
 }
 
-func printSessionTable(cmd *cobra.Command, sessions []*core.AgentSession) {
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
+func printSessionTable(cmd *cobra.Command, sessions []*core.AgentSession) error {
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), tabMinWidth, tabWidth, tabPadding, ' ', 0)
 	fmt.Fprintln(w, "ID\tNAME\tHARNESS\tMODEL\tSTATUS\tUPTIME\tLAST-ACTIVE\tWORKDIR")
 	for _, s := range sessions {
 		model := s.Model
@@ -67,12 +73,12 @@ func printSessionTable(cmd *cobra.Command, sessions []*core.AgentSession) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.ID, s.Name, s.Harness, model, core.StatusLabel(s), core.Uptime(s), core.Ago(s.LastActive), core.TildePath(s.WorkDir))
 	}
-	w.Flush()
+	return w.Flush()
 }
 
-func printSessionDetail(cmd *cobra.Command, s *core.AgentSession) {
+func printSessionDetail(cmd *cobra.Command, s *core.AgentSession) error {
 	out := cmd.OutOrStdout()
-	w := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
+	w := tabwriter.NewWriter(out, tabMinWidth, tabWidth, tabPadding, ' ', 0)
 	pair := func(k, v string) { fmt.Fprintf(w, "%s\t%s\n", k, v) }
 	pair("ID", s.ID)
 	pair("Name", s.Name)
@@ -87,7 +93,7 @@ func printSessionDetail(cmd *cobra.Command, s *core.AgentSession) {
 	pair("Command", s.Command)
 	pair("WorkDir", core.TildePath(s.WorkDir))
 	pair("PID", fmt.Sprintf("%d (pgid %d)", s.PID, s.PGID))
-	pair("Service", fmt.Sprintf("%v", s.Service))
+	pair("Service", strconv.FormatBool(s.Service))
 	pair("Log", s.LogPath)
 	pair("Started", s.StartedAt.Local().Format(time.RFC3339)+" ("+core.Uptime(s)+")")
 	pair("LastActive", core.Ago(s.LastActive))
@@ -97,5 +103,5 @@ func printSessionDetail(cmd *cobra.Command, s *core.AgentSession) {
 	for k, v := range s.Metadata {
 		pair("Meta."+k, v)
 	}
-	w.Flush()
+	return w.Flush()
 }

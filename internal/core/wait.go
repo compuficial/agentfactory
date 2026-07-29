@@ -5,6 +5,7 @@ import "time"
 // WaitOutcome is the result of a Wait poll loop.
 type WaitOutcome int
 
+// Wait poll outcomes.
 const (
 	WaitReached  WaitOutcome = iota // session hit a target status
 	WaitTerminal                    // session ended in a non-target terminal status

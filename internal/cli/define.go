@@ -9,18 +9,23 @@ import (
 	"agentfactory.sh/af/internal/core"
 )
 
+// defineFlags are the definition fields settable from the command line.
+type defineFlags struct {
+	harness   string
+	model     string
+	workdir   string
+	envKVs    []string
+	configKVs []string
+	cmdStr    string
+	service   bool
+}
+
 func newDefineCmd() *cobra.Command {
 	var (
-		harness   string
-		model     string
-		workdir   string
-		envKVs    []string
-		configKVs []string
-		cmdStr    string
-		fromRef   string
-		service   bool
-		quiet     bool
-		open      bool
+		f       defineFlags
+		fromRef string
+		quiet   bool
+		open    bool
 	)
 	c := &cobra.Command{
 		Use:   "define <name>",
@@ -39,65 +44,28 @@ func newDefineCmd() *cobra.Command {
 			}
 			defer app.Close()
 
-			// Upsert: start from the existing definition, apply only the
-			// flags that were passed.
-			def := &core.AgentDefinition{Name: args[0], Env: map[string]string{}, Config: map[string]string{}}
-			if existing, err := app.Store.GetDefinition(args[0]); err == nil {
-				def = existing
-				if def.Env == nil {
-					def.Env = map[string]string{}
-				}
-				if def.Config == nil {
-					def.Config = map[string]string{}
-				}
-			} else if core.ExitCode(err) != core.ExitNotFound {
+			def, err := loadOrNewDefinition(app, args[0])
+			if err != nil {
 				return err
 			}
 			// --from seeds the definition from a live session's config
 			// (harness/model/workdir/env/cmd); explicit flags below still
 			// win, so you can capture-then-tweak in one command.
 			if fromRef != "" {
-				sess, err := app.Manager.ResolveOne(fromRef)
-				if err != nil {
-					return err
+				sess, resolveErr := app.Manager.ResolveOne(fromRef)
+				if resolveErr != nil {
+					return resolveErr
 				}
 				def.SeedFromSession(sess)
 			}
-			if cmdStr != "" {
-				def.Harness = "custom"
-				def.Config["cmd"] = cmdStr
+			if applyErr := f.apply(cmd, def); applyErr != nil {
+				return applyErr
 			}
-			if cmd.Flags().Changed("harness") {
-				def.Harness = harness
+			if validateErr := app.Manager.Harnesses.ValidateDefinition(def); validateErr != nil {
+				return validateErr
 			}
-			if cmd.Flags().Changed("model") {
-				def.Model = model
-			}
-			if cmd.Flags().Changed("workdir") {
-				def.WorkDir = workdir
-			}
-			if cmd.Flags().Changed("service") {
-				def.Service = service
-			}
-			for _, kv := range envKVs {
-				k, v, err := core.ParseKV(kv)
-				if err != nil {
-					return err
-				}
-				def.Env[k] = v
-			}
-			for _, kv := range configKVs {
-				k, v, err := core.ParseKV(kv)
-				if err != nil {
-					return err
-				}
-				def.Config[k] = v
-			}
-			if err := app.Manager.Harnesses.ValidateDefinition(def); err != nil {
-				return err
-			}
-			if err := app.Store.PutDefinition(def); err != nil {
-				return err
+			if putErr := app.Store.PutDefinition(def); putErr != nil {
+				return putErr
 			}
 			if !quiet {
 				fmt.Fprintf(cmd.OutOrStdout(), "defined %s (harness %s)\n", def.Name, def.Harness)
@@ -113,17 +81,72 @@ func newDefineCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringVar(&harness, "harness", "", "harness to launch (required on create, unless --cmd)")
-	c.Flags().StringVar(&model, "model", "", "model passthrough")
-	c.Flags().StringVarP(&workdir, "workdir", "C", "", "default working directory")
-	c.Flags().StringArrayVarP(&envKVs, "env", "e", nil, "environment K=V (repeatable)")
-	c.Flags().StringArrayVar(&configKVs, "config", nil, "harness-specific config K=V (repeatable)")
-	c.Flags().StringVar(&cmdStr, "cmd", "", "shorthand: harness=custom with this command")
+	c.Flags().StringVar(&f.harness, "harness", "", "harness to launch (required on create, unless --cmd)")
+	c.Flags().StringVar(&f.model, "model", "", "model passthrough")
+	c.Flags().StringVarP(&f.workdir, "workdir", "C", "", "default working directory")
+	c.Flags().StringArrayVarP(&f.envKVs, "env", "e", nil, "environment K=V (repeatable)")
+	c.Flags().StringArrayVar(&f.configKVs, "config", nil, "harness-specific config K=V (repeatable)")
+	c.Flags().StringVar(&f.cmdStr, "cmd", "", "shorthand: harness=custom with this command")
 	c.Flags().StringVar(&fromRef, "from", "", "seed fields from an existing session (name or id)")
-	c.Flags().BoolVar(&service, "service", false, "definitions launch as service sessions")
+	c.Flags().BoolVar(&f.service, "service", false, "definitions launch as service sessions")
 	c.Flags().BoolVar(&open, "open", false, "immediately open a session from the definition")
 	c.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress non-essential output")
 	return c
+}
+
+// loadOrNewDefinition returns the stored definition for name (upsert:
+// edits layer onto it) or a fresh one when none exists yet.
+func loadOrNewDefinition(app *App, name string) (*core.AgentDefinition, error) {
+	existing, err := app.Store.GetDefinition(name)
+	if err != nil {
+		if core.ExitCode(err) != core.ExitNotFound {
+			return nil, err
+		}
+		return &core.AgentDefinition{Name: name, Env: map[string]string{}, Config: map[string]string{}}, nil
+	}
+	if existing.Env == nil {
+		existing.Env = map[string]string{}
+	}
+	if existing.Config == nil {
+		existing.Config = map[string]string{}
+	}
+	return existing, nil
+}
+
+// apply overlays onto def only the flags that were passed, so an upsert
+// leaves unmentioned fields alone.
+func (f *defineFlags) apply(cmd *cobra.Command, def *core.AgentDefinition) error {
+	if f.cmdStr != "" {
+		def.Harness = "custom"
+		def.Config["cmd"] = f.cmdStr
+	}
+	if cmd.Flags().Changed("harness") {
+		def.Harness = f.harness
+	}
+	if cmd.Flags().Changed("model") {
+		def.Model = f.model
+	}
+	if cmd.Flags().Changed("workdir") {
+		def.WorkDir = f.workdir
+	}
+	if cmd.Flags().Changed("service") {
+		def.Service = f.service
+	}
+	for _, kv := range f.envKVs {
+		k, v, err := core.ParseKV(kv)
+		if err != nil {
+			return err
+		}
+		def.Env[k] = v
+	}
+	for _, kv := range f.configKVs {
+		k, v, err := core.ParseKV(kv)
+		if err != nil {
+			return err
+		}
+		def.Config[k] = v
+	}
+	return nil
 }
 
 func newDefsCmd() *cobra.Command {
@@ -132,7 +155,7 @@ func newDefsCmd() *cobra.Command {
 		Use:   "defs",
 		Short: "List agent definitions",
 		Args:  exactArgs(0),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			app, err := newStoreApp(cmd)
 			if err != nil {
 				return err
@@ -149,7 +172,7 @@ func newDefsCmd() *cobra.Command {
 				}
 				return writeJSON(cmd, out)
 			}
-			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), tabMinWidth, tabWidth, tabPadding, ' ', 0)
 			fmt.Fprintln(w, "NAME\tHARNESS\tMODEL\tWORKDIR\tSERVICE")
 			for _, d := range defs {
 				model, workdir := d.Model, d.WorkDir

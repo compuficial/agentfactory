@@ -61,7 +61,7 @@ func (d *AgentDefinition) SeedFromSession(s *AgentSession) {
 		}
 		d.Env[k] = v
 	}
-	if s.Harness == "custom" {
+	if s.Harness == HarnessCustom {
 		if d.Config == nil {
 			d.Config = map[string]string{}
 		}

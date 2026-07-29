@@ -31,8 +31,8 @@ func resolveLaunch(app *App, token string, extra []string, opts launchOpts) (*co
 		if err != nil {
 			return nil, false, err
 		}
-		if sess, err := resume(app, def.Harness, workDir, opts.forceNew); err != nil || sess != nil {
-			return sess, sess != nil, err
+		if sess, resumeErr := resume(app, def.Harness, workDir, opts.forceNew); resumeErr != nil || sess != nil {
+			return sess, sess != nil, resumeErr
 		}
 		sess, err := app.Manager.Open(core.OpenRequest{
 			Definition: token, Name: opts.name, WorkDir: workDir, ExtraArgs: extra,
@@ -53,8 +53,8 @@ func resolveLaunch(app *App, token string, extra []string, opts launchOpts) (*co
 	if err != nil {
 		return nil, false, err
 	}
-	if sess, err := resume(app, harness.Name, workDir, opts.forceNew); err != nil || sess != nil {
-		return sess, sess != nil, err
+	if sess, resumeErr := resume(app, harness.Name, workDir, opts.forceNew); resumeErr != nil || sess != nil {
+		return sess, sess != nil, resumeErr
 	}
 	name := opts.name
 	if name == "" {

@@ -19,9 +19,29 @@ import (
 	"agentfactory.sh/af/internal/core"
 )
 
+// Environment variables the loader reads (precedence: above the YAML
+// file, below flags).
+const (
+	envSocket        = "AF_SOCKET"
+	envDataDir       = "AF_DATA_DIR"
+	envIdleThreshold = "AF_IDLE_THRESHOLD"
+	envCloseTimeout  = "AF_CLOSE_TIMEOUT"
+	envSendDelay     = "AF_SEND_DELAY"
+	envDetect        = "AF_DETECT"
+	envSignals       = "AF_SIGNALS"
+)
+
+// Built-in defaults for the tunable durations.
+const (
+	defaultIdleThreshold = 5 * time.Second
+	defaultCloseTimeout  = 10 * time.Second
+	defaultSendDelay     = 50 * time.Millisecond
+)
+
 // Duration is a time.Duration that unmarshals from YAML strings like "5s".
 type Duration time.Duration
 
+// UnmarshalYAML parses YAML duration strings ("5s", "100ms") into Duration.
 func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 	var s string
 	if err := node.Decode(&s); err != nil {
@@ -94,9 +114,9 @@ func Defaults() *Config {
 	return &Config{
 		Socket:        "af",
 		DataDir:       "~/.local/share/agentfactory",
-		IdleThreshold: Duration(5 * time.Second),
-		CloseTimeout:  Duration(10 * time.Second),
-		SendDelay:     Duration(50 * time.Millisecond),
+		IdleThreshold: Duration(defaultIdleThreshold),
+		CloseTimeout:  Duration(defaultCloseTimeout),
+		SendDelay:     Duration(defaultSendDelay),
 		TUI:           TUIConfig{Tick: Duration(time.Second)},
 		Harnesses:     map[string]HarnessConfig{},
 	}
@@ -157,19 +177,19 @@ func applyFile(cfg *Config, path string) error {
 }
 
 func applyEnv(cfg *Config, env func(string) string) error {
-	if v := env("AF_SOCKET"); v != "" {
+	if v := env(envSocket); v != "" {
 		cfg.Socket = v
 	}
-	if v := env("AF_DATA_DIR"); v != "" {
+	if v := env(envDataDir); v != "" {
 		cfg.DataDir = v
 	}
 	for _, e := range []struct {
 		name string
 		dst  *Duration
 	}{
-		{"AF_IDLE_THRESHOLD", &cfg.IdleThreshold},
-		{"AF_CLOSE_TIMEOUT", &cfg.CloseTimeout},
-		{"AF_SEND_DELAY", &cfg.SendDelay},
+		{envIdleThreshold, &cfg.IdleThreshold},
+		{envCloseTimeout, &cfg.CloseTimeout},
+		{envSendDelay, &cfg.SendDelay},
 	} {
 		v := env(e.name)
 		if v == "" {
@@ -181,17 +201,17 @@ func applyEnv(cfg *Config, env func(string) string) error {
 		}
 		*e.dst = Duration(d)
 	}
-	if v := env("AF_DETECT"); v != "" {
+	if v := env(envDetect); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("AF_DETECT: invalid bool %q", v)
+			return fmt.Errorf("%s: invalid bool %q", envDetect, v)
 		}
 		cfg.Detect = &b
 	}
-	if v := env("AF_SIGNALS"); v != "" {
+	if v := env(envSignals); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("AF_SIGNALS: invalid bool %q", v)
+			return fmt.Errorf("%s: invalid bool %q", envSignals, v)
 		}
 		cfg.Signals.Enabled = &b
 	}

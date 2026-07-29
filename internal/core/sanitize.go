@@ -92,9 +92,9 @@ func ReadLogTail(path string, maxBytes int64) (string, error) {
 	}
 	defer f.Close()
 	if maxBytes > 0 {
-		if fi, err := f.Stat(); err == nil && fi.Size() > maxBytes {
-			if _, err := f.Seek(fi.Size()-maxBytes, io.SeekStart); err != nil {
-				return "", err
+		if fi, statErr := f.Stat(); statErr == nil && fi.Size() > maxBytes {
+			if _, seekErr := f.Seek(fi.Size()-maxBytes, io.SeekStart); seekErr != nil {
+				return "", seekErr
 			}
 		}
 	}

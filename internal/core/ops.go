@@ -9,6 +9,17 @@ import (
 	"time"
 )
 
+const (
+	// quitGrace is how long Close waits for a harness to exit after its
+	// QuitKeys are sent, before escalating to SIGTERM.
+	quitGrace = 2 * time.Second
+	// harvestTimeout bounds how long harvest waits for the pane to report
+	// death after SIGKILL before giving up.
+	harvestTimeout = 3 * time.Second
+	// deadPollInterval is the poll cadence while waiting for a pane to die.
+	deadPollInterval = 50 * time.Millisecond
+)
+
 // Manager wires the store, backend, and resolved settings into the
 // session operations behind every CLI/TUI command.
 type Manager struct {
@@ -89,90 +100,32 @@ func (m *Manager) LiveMatch(harness, workDir string) (*AgentSession, error) {
 // Open resolves definition + overrides, validates, and starts a session
 // (§8.2 af open, Appendix A lifecycle).
 func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
-	def := AgentDefinition{Env: map[string]string{}, Config: map[string]string{}}
-	if req.Definition != "" {
-		loaded, err := m.Store.GetDefinition(req.Definition)
-		if err != nil {
-			return nil, err
-		}
-		def = *loaded
-		if def.Env == nil {
-			def.Env = map[string]string{}
-		}
-		if def.Config == nil {
-			def.Config = map[string]string{}
-		}
-	}
-
-	// Flag overrides.
-	if req.Cmd != "" {
-		def.Harness = "custom"
-		def.Config["cmd"] = req.Cmd
-	}
-	if req.Harness != "" {
-		def.Harness = req.Harness
-	}
-	if req.Model != "" {
-		def.Model = req.Model
-	}
-	if req.WorkDir != "" {
-		def.WorkDir = req.WorkDir
-	}
-	def.Service = def.Service || req.Service
-
-	if def.Harness == "" {
-		return nil, Errf(ExitUsage, "no harness: pass a definition, --harness, or --cmd")
-	}
-	harness, err := m.Harnesses.Resolve(def.Harness)
+	def, err := m.buildDefinition(req)
 	if err != nil {
 		return nil, err
 	}
-	if def.Harness == "custom" && strings.TrimSpace(def.Config["cmd"]) == "" {
-		return nil, Errf(ExitRuntime, "custom harness requires a command (--cmd or config cmd)")
+	harness, err := m.resolveHarness(def)
+	if err != nil {
+		return nil, err
 	}
 
-	// WorkDir: default cwd; resolved to absolute; must exist.
+	// WorkDir: default cwd; resolved to absolute; must exist. Set on def
+	// before rendering so the command template can reach it.
 	workDir, err := ResolveWorkDir(def.WorkDir)
 	if err != nil {
 		return nil, err
 	}
 	def.WorkDir = workDir
 
-	// Harness wiring files (hook configs, notify scripts — pure data)
-	// must exist before the payload launches; the template reaches them
-	// via {{.FilesDir}}.
-	filesDir, err := MaterializeFiles(harness, m.DataDir)
+	command, err := m.renderCommand(harness, def, req.ExtraArgs)
 	if err != nil {
 		return nil, err
-	}
-	command, err := RenderCommand(harness, def, filesDir)
-	if err != nil {
-		return nil, err
-	}
-	if len(req.ExtraArgs) > 0 {
-		command += " " + QuoteArgs(req.ExtraArgs)
 	}
 
-	// Name: --name > definition name > harness name; suffix on live collision.
-	base := req.Name
-	if base == "" {
-		base = req.Definition
-	}
-	if base == "" {
-		base = def.Harness
-	}
-	live, err := m.Store.ListSessions(false)
+	name, err := m.uniqueName(req, def)
 	if err != nil {
 		return nil, err
 	}
-	name := SuffixName(base, func(candidate string) bool {
-		for _, s := range live {
-			if s.Name == candidate {
-				return true
-			}
-		}
-		return false
-	})
 
 	id, err := m.newSessionID()
 	if err != nil {
@@ -180,7 +133,7 @@ func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
 	}
 
 	logDir := filepath.Join(m.DataDir, "logs")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, dirPerm); err != nil {
 		return nil, Errf(ExitRuntime, "create log dir: %v", err)
 	}
 	logPath := filepath.Join(logDir, id+".log")
@@ -218,6 +171,101 @@ func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
 		return nil, err
 	}
 	return sess, nil
+}
+
+// buildDefinition loads req's named definition (if any) and layers the
+// ad-hoc flag overrides on top, returning the effective launch config.
+func (m *Manager) buildDefinition(req OpenRequest) (AgentDefinition, error) {
+	def := AgentDefinition{Env: map[string]string{}, Config: map[string]string{}}
+	if req.Definition != "" {
+		loaded, err := m.Store.GetDefinition(req.Definition)
+		if err != nil {
+			return def, err
+		}
+		def = *loaded
+		if def.Env == nil {
+			def.Env = map[string]string{}
+		}
+		if def.Config == nil {
+			def.Config = map[string]string{}
+		}
+	}
+
+	// Flag overrides.
+	if req.Cmd != "" {
+		def.Harness = HarnessCustom
+		def.Config["cmd"] = req.Cmd
+	}
+	if req.Harness != "" {
+		def.Harness = req.Harness
+	}
+	if req.Model != "" {
+		def.Model = req.Model
+	}
+	if req.WorkDir != "" {
+		def.WorkDir = req.WorkDir
+	}
+	def.Service = def.Service || req.Service
+	return def, nil
+}
+
+// resolveHarness checks that def names a harness that exists, and that a
+// custom harness carries a command.
+func (m *Manager) resolveHarness(def AgentDefinition) (Harness, error) {
+	if def.Harness == "" {
+		return Harness{}, Errf(ExitUsage, "no harness: pass a definition, --harness, or --cmd")
+	}
+	harness, err := m.Harnesses.Resolve(def.Harness)
+	if err != nil {
+		return Harness{}, err
+	}
+	if def.Harness == HarnessCustom && strings.TrimSpace(def.Config["cmd"]) == "" {
+		return Harness{}, Errf(ExitRuntime, "custom harness requires a command (--cmd or config cmd)")
+	}
+	return harness, nil
+}
+
+// renderCommand materializes the harness's wiring files (hook configs,
+// notify scripts — pure data) so the template can reach them via
+// {{.FilesDir}}, renders the command against def, and appends any
+// passthrough args.
+func (m *Manager) renderCommand(harness Harness, def AgentDefinition, extraArgs []string) (string, error) {
+	filesDir, err := MaterializeFiles(harness, m.DataDir)
+	if err != nil {
+		return "", err
+	}
+	command, err := RenderCommand(harness, def, filesDir)
+	if err != nil {
+		return "", err
+	}
+	if len(extraArgs) > 0 {
+		command += " " + QuoteArgs(extraArgs)
+	}
+	return command, nil
+}
+
+// uniqueName picks the session's display name (--name > definition name
+// > harness name) and suffixes it on collision with a live session.
+func (m *Manager) uniqueName(req OpenRequest, def AgentDefinition) (string, error) {
+	base := req.Name
+	if base == "" {
+		base = req.Definition
+	}
+	if base == "" {
+		base = def.Harness
+	}
+	live, err := m.Store.ListSessions(false)
+	if err != nil {
+		return "", err
+	}
+	return SuffixName(base, func(candidate string) bool {
+		for _, s := range live {
+			if s.Name == candidate {
+				return true
+			}
+		}
+		return false
+	}), nil
 }
 
 func (m *Manager) newSessionID() (string, error) {
@@ -293,7 +341,7 @@ func (m *Manager) Close(sess *AgentSession, timeout time.Duration) error {
 					break // pane may already be gone; fall through to signaling
 				}
 			}
-			if m.waitDead(sess, 2*time.Second) {
+			if m.waitDead(sess, quitGrace) {
 				return m.harvest(sess)
 			}
 		}
@@ -318,7 +366,7 @@ func (m *Manager) waitDead(sess *AgentSession, timeout time.Duration) bool {
 		if dead, _, err := m.Backend.DeadStatus(sess.ID); err == nil && dead {
 			return true
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(deadPollInterval)
 	}
 	return false
 }
@@ -362,7 +410,7 @@ func (m *Manager) Send(sess *AgentSession, text string, enter bool) error {
 // harvest waits briefly for the pane to report death, records the exit
 // code (or failure), and destroys the tmux session.
 func (m *Manager) harvest(sess *AgentSession) error {
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(harvestTimeout)
 	for {
 		alive, err := m.Backend.IsAlive(sess.ID)
 		if err != nil {
@@ -387,6 +435,6 @@ func (m *Manager) harvest(sess *AgentSession) error {
 		if time.Now().After(deadline) {
 			return Errf(ExitRuntime, "session %s did not die after SIGKILL", sess.ID)
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(deadPollInterval)
 	}
 }

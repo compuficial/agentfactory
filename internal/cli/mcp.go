@@ -22,7 +22,7 @@ MCP-native harness (e.g. claude mcp add af -- af mcp) and the agent gets
 typed tools for opening, steering, and waiting on sibling af sessions.
 The server is spawned per client and dies with it: no daemon, no port.`,
 		Args: exactArgs(0),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			server := newMCPServer(func() (*App, error) { return newApp(cmd) })
 			return server.Run(cmd.Context(), &mcp.StdioTransport{})
 		},
@@ -72,7 +72,7 @@ type mcpSignalArgs struct {
 // App per call, closed when the call ends — daemonless, so nothing
 // outlives one call and config/DB state is never held stale.
 func appTool[In any](app func() (*App, error), fn func(*App, In) (*mcp.CallToolResult, any, error)) mcp.ToolHandlerFor[In, any] {
-	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+	return func(_ context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		a, err := app()
 		if err != nil {
 			return nil, nil, err
@@ -91,7 +91,19 @@ block until a peer stops working (idle/awaiting-input/done), and
 af_signal with state "done" to report your own task complete so peers
 waiting on you unblock.`,
 	})
+	addStatusTool(server, app)
+	addPeekTool(server, app)
+	addLogsTool(server, app)
+	addSendTool(server, app)
+	addOpenTool(server, app)
+	addWaitTool(server, app)
+	addCloseTool(server, app)
+	addDefsTool(server, app)
+	addSignalTool(server, app)
+	return server
+}
 
+func addStatusTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_status",
 		Description: "List af sessions with status. Call this first to discover peers.",
@@ -106,7 +118,9 @@ waiting on you unblock.`,
 		}
 		return mcpJSON(out)
 	}))
+}
 
+func addPeekTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_peek",
 		Description: "Read a session's current rendered screen. Use after af_wait to see what a peer produced or is asking.",
@@ -121,7 +135,9 @@ waiting on you unblock.`,
 		}
 		return mcpText(screen), nil, nil
 	}))
+}
 
+func addLogsTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_logs",
 		Description: "Read a session's captured output history (scrollback survives detach).",
@@ -136,11 +152,13 @@ waiting on you unblock.`,
 		}
 		lines := args.Lines
 		if lines <= 0 {
-			lines = 200
+			lines = defaultLogLines
 		}
 		return mcpText(string(core.TailLines([]byte(cleaned), lines))), nil, nil
 	}))
+}
 
+func addSendTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_send",
 		Description: "Inject input into a session without attaching — how you give a peer its task or answer its prompt.",
@@ -154,7 +172,9 @@ waiting on you unblock.`,
 		}
 		return mcpText("sent"), nil, nil
 	}))
+}
 
+func addOpenTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_open",
 		Description: "Start a new agent or service session from a definition (af_defs) or ad-hoc flags. Returns the new session object.",
@@ -172,7 +192,15 @@ waiting on you unblock.`,
 		}
 		return mcpJSON(sess.JSON())
 	}))
+}
 
+// af_wait timeout bounds (the client passes seconds).
+const (
+	mcpWaitDefault = 60 * time.Second
+	mcpWaitMax     = 600 * time.Second
+)
+
+func addWaitTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_wait",
 		Description: "Block until a session reaches a target status — the coordination primitive. Default targets mean \"the peer stopped working\".",
@@ -187,15 +215,15 @@ waiting on you unblock.`,
 		}
 		targets := map[core.Status]bool{}
 		for _, name := range strings.Split(forCSV, ",") {
-			status, err := core.ParseStatus(strings.TrimSpace(name))
-			if err != nil {
-				return nil, nil, err
+			status, parseErr := core.ParseStatus(strings.TrimSpace(name))
+			if parseErr != nil {
+				return nil, nil, parseErr
 			}
 			targets[status] = true
 		}
-		timeout := 60 * time.Second
+		timeout := mcpWaitDefault
 		if args.TimeoutSeconds > 0 {
-			timeout = min(time.Duration(args.TimeoutSeconds)*time.Second, 600*time.Second)
+			timeout = min(time.Duration(args.TimeoutSeconds)*time.Second, mcpWaitMax)
 		}
 		sess, outcome, err := a.Manager.Wait(sess.ID, targets, timeout, time.Second)
 		if err != nil {
@@ -206,7 +234,9 @@ waiting on you unblock.`,
 			"timed_out": outcome == core.WaitTimeout,
 		})
 	}))
+}
 
+func addCloseTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_close",
 		Description: "Gracefully stop a session you opened (quit keys, then escalating signals).",
@@ -220,7 +250,9 @@ waiting on you unblock.`,
 		}
 		return mcpText("closed"), nil, nil
 	}))
+}
 
+func addDefsTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_defs",
 		Description: "List reusable agent definitions available to af_open.",
@@ -235,7 +267,9 @@ waiting on you unblock.`,
 		}
 		return mcpJSON(out)
 	}))
+}
 
+func addSignalTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_signal",
 		Description: "Report a harness state: call with state \"done\" when your task is complete so peers waiting on you unblock (session defaults to yourself).",
@@ -256,8 +290,6 @@ waiting on you unblock.`,
 		}
 		return mcpText("signaled " + args.State), nil, nil
 	}))
-
-	return server
 }
 
 func mcpText(s string) *mcp.CallToolResult {

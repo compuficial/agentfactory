@@ -63,7 +63,7 @@ and attaches. Anything after the agent name is passed to it verbatim
 	root.Flags().StringVar(&opts.name, "name", "", "session name (default: <agent>-<dir>)")
 	root.PersistentFlags().String("socket", "", "tmux socket name (default: af)")
 	root.PersistentFlags().String("data-dir", "", "db + logs directory (default: ~/.local/share/agentfactory)")
-	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return core.Errf(core.ExitUsage, "%v", err)
 	})
 	root.AddCommand(
@@ -160,9 +160,10 @@ type App struct {
 	Manager *core.Manager
 }
 
+// Close releases the App's store handle; safe on a partially built App.
 func (a *App) Close() {
 	if a.Store != nil {
-		a.Store.Close()
+		_ = a.Store.Close() // nothing to do with a close error at teardown
 	}
 }
 

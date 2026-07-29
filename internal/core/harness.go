@@ -10,14 +10,30 @@ import (
 	"text/template"
 )
 
+// Built-in harness names. Harnesses are a public concept referenced
+// across the package (and by callers selecting one), so these are
+// exported and used wherever a name is compared or keyed.
+const (
+	HarnessClaudeCode  = "claude-code"
+	HarnessCodex       = "codex"
+	HarnessGrok        = "grok"
+	HarnessOpencode    = "opencode"
+	HarnessCursorAgent = "cursor-agent"
+	HarnessAgent       = "agent"
+	HarnessCustom      = "custom"
+)
+
+// quitExit is the slash-command most REPL harnesses quit on.
+const quitExit = "/exit"
+
 // Builtins returns the compiled-in harnesses: the major agent CLIs, a
 // generic "agent" that runs whatever `agent` binary is on PATH, plus
 // "custom" for anything else. Users can override any of these (or add
 // more) via config; same name wins.
 func Builtins() map[string]Harness {
 	return map[string]Harness{
-		"claude-code": {
-			Name: "claude-code",
+		HarnessClaudeCode: {
+			Name: HarnessClaudeCode,
 			// Hook auto-wiring, expressed purely as harness data: Files
 			// materializes a settings file whose Stop/Notification hooks
 			// flip the session to awaiting-input the moment the agent
@@ -26,7 +42,7 @@ func Builtins() map[string]Harness {
 			// overriding this harness in config opts out.
 			CommandTmpl: `claude{{if .FilesDir}} --settings {{.FilesDir}}/settings.json{{end}}{{if .Model}} --model {{.Model}}{{end}}`,
 			Env:         map[string]string{},
-			QuitKeys:    []string{"/exit"},
+			QuitKeys:    []string{quitExit},
 			Files: map[string]string{
 				"settings.json": `{
   "hooks": {
@@ -47,41 +63,41 @@ func Builtins() map[string]Harness {
 			// verified against the live TUI, overridable via config.
 			Detect: DetectRules{
 				AwaitingInput: []string{
-					`(?i)do you want`,
+					patDoYouWant,
 					`(?i)would you like`,
 					`❯ 1\.`,
 					`\? for shortcuts`,
 				},
 				Working: []string{
-					`esc to interrupt`,
+					patEscToInterrupt,
 				},
 			},
 		},
-		"codex": {
-			Name:        "codex",
+		HarnessCodex: {
+			Name:        HarnessCodex,
 			CommandTmpl: `codex{{if .Model}} --model {{.Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{"/quit"},
 		},
-		"grok": {
-			Name:        "grok",
+		HarnessGrok: {
+			Name:        HarnessGrok,
 			CommandTmpl: `grok{{if .Model}} --model {{.Model}}{{end}}`,
 			Env:         map[string]string{},
-			QuitKeys:    []string{"/exit"},
+			QuitKeys:    []string{quitExit},
 		},
-		"opencode": {
-			Name:        "opencode",
+		HarnessOpencode: {
+			Name:        HarnessOpencode,
 			CommandTmpl: `opencode{{if .Model}} --model {{.Model}}{{end}}`,
 			Env:         map[string]string{},
-			QuitKeys:    []string{"/exit"},
+			QuitKeys:    []string{quitExit},
 		},
 		// Cursor's CLI installs two symlinks to the same binary: `agent`
 		// (primary, matched by the generic harness above) and
 		// `cursor-agent` (legacy). This targets `cursor-agent` so it
 		// launches Cursor even when `agent` points elsewhere. Cursor has
 		// no documented slash-exit, so close falls through to SIGTERM.
-		"cursor-agent": {
-			Name:        "cursor-agent",
+		HarnessCursorAgent: {
+			Name:        HarnessCursorAgent,
 			CommandTmpl: `cursor-agent{{if .Model}} --model {{.Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{},
@@ -90,14 +106,14 @@ func Builtins() map[string]Harness {
 		// machine (e.g. a symlink to grok, cursor-agent, ...). Lets
 		// `af agent` Just Work when the user's agent CLI installs as
 		// `agent`; falls back to "not on PATH" when it doesn't.
-		"agent": {
-			Name:        "agent",
+		HarnessAgent: {
+			Name:        HarnessAgent,
 			CommandTmpl: `agent{{if .Model}} --model {{.Model}}{{end}}`,
 			Env:         map[string]string{},
-			QuitKeys:    []string{"/exit"},
+			QuitKeys:    []string{quitExit},
 		},
-		"custom": {
-			Name:        "custom",
+		HarnessCustom: {
+			Name:        HarnessCustom,
 			CommandTmpl: `{{index .Config "cmd"}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{},
@@ -170,7 +186,7 @@ func MaterializeFiles(h Harness, dataDir string) (string, error) {
 		return "", nil
 	}
 	dir := filepath.Join(dataDir, "harnesses", h.Name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return "", Errf(ExitRuntime, "create harness files dir: %v", err)
 	}
 	for name, content := range h.Files {
@@ -178,7 +194,7 @@ func MaterializeFiles(h Harness, dataDir string) (string, error) {
 			return "", Errf(ExitRuntime, "harness %s: invalid file name %q (bare names only)", h.Name, name)
 		}
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(content), filePerm); err != nil {
 			return "", Errf(ExitRuntime, "write harness file %s: %v", path, err)
 		}
 	}
@@ -195,7 +211,7 @@ func (s HarnessSet) ValidateDefinition(def *AgentDefinition) error {
 	if err != nil {
 		return err
 	}
-	if def.Harness == "custom" && strings.TrimSpace(def.Config["cmd"]) == "" {
+	if def.Harness == HarnessCustom && strings.TrimSpace(def.Config["cmd"]) == "" {
 		return Errf(ExitRuntime, "custom harness requires a command (--cmd or --config cmd=...)")
 	}
 	_, err = RenderCommand(harness, *def, "")

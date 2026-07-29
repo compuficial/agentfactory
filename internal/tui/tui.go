@@ -4,6 +4,7 @@ package tui
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -47,6 +48,34 @@ const (
 	modePicker
 	modeConfirm
 	modeCommand
+)
+
+// Bubble Tea key names shared across the mode handlers and help view.
+const (
+	keyEnter = "enter"
+	keyEsc   = "esc"
+)
+
+// Confirm-prompt verbs. close and kill double as the prompt text;
+// rm-def is picker-only.
+const (
+	verbClose = "close"
+	verbKill  = "kill"
+	verbRmDef = "rm-def"
+)
+
+// Dashboard tuning knobs.
+const (
+	flashTTL     = 4 * time.Second        // how long transient footer messages stay up
+	redrawWait   = 120 * time.Millisecond // pause after a resize so the harness TUI repaints
+	logTailBytes = 256 << 10              // max log bytes loaded into the logs view
+)
+
+// Panel chrome around embedded viewports (borders, padding, headers).
+const (
+	panelChromeCols  = 4 // left/right border + padding columns
+	logsChromeRows   = 3 // header + border rows around the logs view
+	detailChromeRows = 4 // header + border rows around the detail view
 )
 
 type model struct {
@@ -161,7 +190,7 @@ func (m *model) refreshCmd() tea.Cmd {
 			// harness TUI renders for exactly this geometry — the
 			// preview then shows what attach would show.
 			if resized, err := deps.Backend.SyncSize(s.ID, previewW, previewH); err == nil && resized {
-				time.Sleep(120 * time.Millisecond) // let the TUI redraw
+				time.Sleep(redrawWait) // let the TUI redraw
 			}
 			if screen, err := deps.Backend.CapturePane(s.ID, 0); err == nil {
 				msg.preview = screen
@@ -170,7 +199,7 @@ func (m *model) refreshCmd() tea.Cmd {
 			break
 		}
 		if wantLogs != "" {
-			if logs, err := core.ReadLogTail(wantLogs, 256<<10); err == nil {
+			if logs, err := core.ReadLogTail(wantLogs, logTailBytes); err == nil {
 				msg.logs = logs
 				msg.logsOK = true
 			}
@@ -188,97 +217,24 @@ func (m *model) selected() *core.AgentSession {
 
 func (m *model) setFlash(text string) {
 	m.flash = strings.TrimSpace(text)
-	m.flashExpiry = time.Now().Add(4 * time.Second)
+	m.flashExpiry = time.Now().Add(flashTTL)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		// Logs render inside a bordered panel: 4 cols / 3 rows of chrome.
-		m.logsVP.Width = max(1, msg.Width-4)
-		m.logsVP.Height = max(1, msg.Height-3)
-		if m.mode == modeDetail {
-			m.syncDetail() // re-wrap for the new width
-		}
+		m.applyResize(msg)
 		return m, nil
-
 	case tickMsg:
 		return m, tea.Batch(m.refreshCmd(), m.tickCmd())
-
 	case refreshMsg:
-		if msg.err != nil {
-			m.setFlash("error: " + msg.err.Error())
-			return m, nil
-		}
-		m.sessions = msg.sessions
-		if msg.previewOK {
-			m.preview = msg.preview
-		}
-		// Keep the selection pinned to the same session across refreshes.
-		found := false
-		for i, s := range m.sessions {
-			if s.ID == m.selectedID {
-				m.cursor, found = i, true
-				break
-			}
-		}
-		if !found {
-			if m.cursor >= len(m.sessions) {
-				m.cursor = max(0, len(m.sessions)-1)
-			}
-			if s := m.selected(); s != nil {
-				m.selectedID = s.ID
-			}
-		}
-		if m.mode == modeLogs && msg.logsOK {
-			atBottom := m.logsVP.AtBottom()
-			m.logsVP.SetContent(msg.logs)
-			if m.follow || atBottom {
-				m.logsVP.GotoBottom()
-			}
-		}
-		if m.mode == modeDetail {
-			if m.selected() == nil {
-				m.mode = modeList // the session went away mid-detail
-			} else {
-				m.syncDetail() // keep status/log tail live; scroll stays put
-			}
-		}
+		m.applyRefresh(msg)
 		return m, nil
-
 	case defsMsg:
-		if msg.err != nil {
-			m.setFlash("error: " + msg.err.Error())
-			return m, nil
-		}
-		if len(msg.defs) == 0 {
-			m.setFlash("no definitions yet — create one with :define <name> --harness ...")
-			return m, nil
-		}
-		m.defs = msg.defs
-		m.pickerCursor = 0
-		m.mode = modePicker
+		m.applyDefs(msg)
 		return m, nil
-
 	case defDeletedMsg:
-		if msg.err != nil {
-			m.setFlash("error: " + msg.err.Error())
-			m.mode = modeList
-			return m, m.refreshCmd()
-		}
-		m.setFlash("removed definition " + msg.name)
-		m.defs = msg.defs
-		if len(m.defs) == 0 {
-			m.mode = modeList // nothing left to pick from
-			return m, nil
-		}
-		if m.pickerCursor >= len(m.defs) {
-			m.pickerCursor = len(m.defs) - 1
-		}
-		m.mode = modePicker
-		return m, nil
-
+		return m, m.applyDefDeleted(msg)
 	case flashMsg:
 		if msg.err != nil {
 			m.setFlash("error: " + msg.err.Error())
@@ -286,17 +242,101 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setFlash(msg.text)
 		}
 		return m, m.refreshCmd()
-
 	case attachDoneMsg:
 		if msg.err != nil {
 			m.setFlash("attach: " + msg.err.Error())
 		}
 		return m, m.refreshCmd()
-
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+func (m *model) applyResize(msg tea.WindowSizeMsg) {
+	m.width, m.height = msg.Width, msg.Height
+	// Logs render inside a bordered panel.
+	m.logsVP.Width = max(1, msg.Width-panelChromeCols)
+	m.logsVP.Height = max(1, msg.Height-logsChromeRows)
+	if m.mode == modeDetail {
+		m.syncDetail() // re-wrap for the new width
+	}
+}
+
+func (m *model) applyRefresh(msg refreshMsg) {
+	if msg.err != nil {
+		m.setFlash("error: " + msg.err.Error())
+		return
+	}
+	m.sessions = msg.sessions
+	if msg.previewOK {
+		m.preview = msg.preview
+	}
+	m.pinSelection()
+	if m.mode == modeLogs && msg.logsOK {
+		atBottom := m.logsVP.AtBottom()
+		m.logsVP.SetContent(msg.logs)
+		if m.follow || atBottom {
+			m.logsVP.GotoBottom()
+		}
+	}
+	if m.mode == modeDetail {
+		if m.selected() == nil {
+			m.mode = modeList // the session went away mid-detail
+		} else {
+			m.syncDetail() // keep status/log tail live; scroll stays put
+		}
+	}
+}
+
+// pinSelection keeps the cursor on the same session across refreshes,
+// clamping it when the selected session disappeared.
+func (m *model) pinSelection() {
+	for i, s := range m.sessions {
+		if s.ID == m.selectedID {
+			m.cursor = i
+			return
+		}
+	}
+	if m.cursor >= len(m.sessions) {
+		m.cursor = max(0, len(m.sessions)-1)
+	}
+	if s := m.selected(); s != nil {
+		m.selectedID = s.ID
+	}
+}
+
+func (m *model) applyDefs(msg defsMsg) {
+	if msg.err != nil {
+		m.setFlash("error: " + msg.err.Error())
+		return
+	}
+	if len(msg.defs) == 0 {
+		m.setFlash("no definitions yet — create one with :define <name> --harness ...")
+		return
+	}
+	m.defs = msg.defs
+	m.pickerCursor = 0
+	m.mode = modePicker
+}
+
+func (m *model) applyDefDeleted(msg defDeletedMsg) tea.Cmd {
+	if msg.err != nil {
+		m.setFlash("error: " + msg.err.Error())
+		m.mode = modeList
+		return m.refreshCmd()
+	}
+	m.setFlash("removed definition " + msg.name)
+	m.defs = msg.defs
+	if len(m.defs) == 0 {
+		m.mode = modeList // nothing left to pick from
+		return nil
+	}
+	if m.pickerCursor >= len(m.defs) {
+		m.pickerCursor = len(m.defs) - 1
+	}
+	m.mode = modePicker
+	return nil
 }
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -316,7 +356,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDetailKey(msg)
 	case modeHelp:
 		switch msg.String() {
-		case "q", "esc", "enter":
+		case "q", keyEsc, keyEnter:
 			m.mode = modeList
 		}
 		return m, nil
@@ -330,82 +370,115 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 	case "j", "down":
-		if m.cursor < len(m.sessions)-1 {
-			m.cursor++
-			m.selectedID = m.sessions[m.cursor].ID
-			m.preview = ""
-			return m, m.refreshCmd()
-		}
+		return m, m.moveCursor(1)
 	case "k", "up":
-		if m.cursor > 0 {
-			m.cursor--
-			m.selectedID = m.sessions[m.cursor].ID
-			m.preview = ""
-			return m, m.refreshCmd()
-		}
-	case "enter":
-		if m.selected() != nil {
-			m.mode = modeDetail
-			m.detailVP = viewport.New(max(1, m.width-4), max(1, m.height-4))
-			m.syncDetail()
-		}
+		return m, m.moveCursor(-1)
+	case keyEnter:
+		m.enterDetail()
 	case "a":
-		if s := m.selected(); s != nil && !s.Status.Terminal() {
-			return m, m.attachCmd(s.ID)
-		}
+		return m, m.attachSelected()
 	case "o":
-		deps := m.deps
-		return m, func() tea.Msg {
-			defs, err := deps.Store.ListDefinitions()
-			return defsMsg{defs: defs, err: err}
-		}
+		return m, m.loadDefsCmd()
 	case "s":
-		// Save the selected session as a reusable definition: prefill
-		// the command bar with the equivalent `define ... --from` so it
-		// runs through the same path as the CLI and the name stays
-		// editable before you commit.
-		if s := m.selected(); s != nil {
-			m.input.SetValue(fmt.Sprintf("define %s --from %s", s.Name, s.ID))
-			m.input.CursorEnd()
-			m.input.Focus()
-			m.mode = modeCommand
-			return m, textinput.Blink
-		}
+		return m, m.saveSelectedAsDef()
 	case "x":
-		if s := m.selected(); s != nil && !s.Status.Terminal() {
-			m.confirmVerb, m.confirmSess = "close", s
-			m.mode = modeConfirm
-		}
+		m.confirmSelected(verbClose)
 	case "X":
-		if s := m.selected(); s != nil && !s.Status.Terminal() {
-			m.confirmVerb, m.confirmSess = "kill", s
-			m.mode = modeConfirm
-		}
+		m.confirmSelected(verbKill)
 	case "l":
-		if s := m.selected(); s != nil {
-			m.logsSess = s
-			m.follow = true
-			m.logsVP = viewport.New(max(1, m.width-4), max(1, m.height-3))
-			logs, _ := core.ReadLogTail(s.LogPath, 256<<10)
-			m.logsVP.SetContent(logs)
-			m.logsVP.GotoBottom()
-			m.mode = modeLogs
-		}
+		m.enterLogs()
 	case ":":
-		m.input.SetValue("")
-		m.input.Focus()
-		m.mode = modeCommand
-		return m, textinput.Blink
+		return m, m.openCommandBar()
 	case "?":
 		m.mode = modeHelp
 	}
 	return m, nil
 }
 
+// moveCursor shifts the selection by delta and refreshes the preview;
+// no-op (and no refresh) at either end of the list.
+func (m *model) moveCursor(delta int) tea.Cmd {
+	next := m.cursor + delta
+	if next < 0 || next >= len(m.sessions) {
+		return nil
+	}
+	m.cursor = next
+	m.selectedID = m.sessions[next].ID
+	m.preview = ""
+	return m.refreshCmd()
+}
+
+func (m *model) enterDetail() {
+	if m.selected() == nil {
+		return
+	}
+	m.mode = modeDetail
+	m.detailVP = viewport.New(max(1, m.width-panelChromeCols), max(1, m.height-detailChromeRows))
+	m.syncDetail()
+}
+
+func (m *model) attachSelected() tea.Cmd {
+	if s := m.selected(); s != nil && !s.Status.Terminal() {
+		return m.attachCmd(s.ID)
+	}
+	return nil
+}
+
+func (m *model) loadDefsCmd() tea.Cmd {
+	deps := m.deps
+	return func() tea.Msg {
+		defs, err := deps.Store.ListDefinitions()
+		return defsMsg{defs: defs, err: err}
+	}
+}
+
+// saveSelectedAsDef prefills the command bar with the equivalent
+// `define ... --from` so it runs through the same path as the CLI and
+// the name stays editable before you commit.
+func (m *model) saveSelectedAsDef() tea.Cmd {
+	s := m.selected()
+	if s == nil {
+		return nil
+	}
+	m.input.SetValue(fmt.Sprintf("define %s --from %s", s.Name, s.ID))
+	m.input.CursorEnd()
+	m.input.Focus()
+	m.mode = modeCommand
+	return textinput.Blink
+}
+
+func (m *model) confirmSelected(verb string) {
+	if s := m.selected(); s != nil && !s.Status.Terminal() {
+		m.confirmVerb, m.confirmSess = verb, s
+		m.mode = modeConfirm
+	}
+}
+
+func (m *model) enterLogs() {
+	s := m.selected()
+	if s == nil {
+		return
+	}
+	m.logsSess = s
+	m.follow = true
+	m.logsVP = viewport.New(max(1, m.width-panelChromeCols), max(1, m.height-logsChromeRows))
+	logs, _ := core.ReadLogTail(s.LogPath, logTailBytes)
+	m.logsVP.SetContent(logs)
+	m.logsVP.GotoBottom()
+	m.mode = modeLogs
+}
+
+func (m *model) openCommandBar() tea.Cmd {
+	m.input.SetValue("")
+	m.input.Focus()
+	m.mode = modeCommand
+	return textinput.Blink
+}
+
 func (m *model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y": // X is shifted, so accept a still-held shift on the y
-		if m.confirmVerb == "rm-def" {
+		if m.confirmVerb == verbRmDef {
 			def := m.confirmDef
 			m.confirmDef = nil
 			store := m.deps.Store
@@ -426,7 +499,7 @@ func (m *model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			var err error
 			done := "closed"
-			if verb == "kill" {
+			if verb == verbKill {
 				err = manager.Kill(sess)
 				done = "killed"
 			} else {
@@ -434,22 +507,22 @@ func (m *model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return flashMsg{text: fmt.Sprintf("%s %s  %s", done, sess.ID, sess.Name), err: err}
 		}
-	case "n", "N", "esc", "q":
-		if m.confirmVerb == "rm-def" { // cancel returns to the picker, not the list
+	case "n", "N", keyEsc, "q":
+		if m.confirmVerb == verbRmDef { // cancel returns to the picker, not the list
 			m.confirmDef = nil
 			m.mode = modePicker
-			m.setFlash("delete cancelled")
+			m.setFlash("delete canceled")
 			return m, nil
 		}
 		m.mode = modeList
-		m.setFlash(m.confirmVerb + " cancelled")
+		m.setFlash(m.confirmVerb + " canceled")
 	}
 	return m, nil // other keys keep the prompt up
 }
 
 func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q", "esc":
+	case "q", keyEsc:
 		m.mode = modeList
 	case "j", "down":
 		if m.pickerCursor < len(m.defs)-1 {
@@ -461,12 +534,12 @@ func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "d", "x":
 		if len(m.defs) > 0 {
-			m.confirmVerb = "rm-def"
+			m.confirmVerb = verbRmDef
 			m.confirmDef = m.defs[m.pickerCursor]
 			m.confirmSess = nil
 			m.mode = modeConfirm
 		}
-	case "enter":
+	case keyEnter:
 		def := m.defs[m.pickerCursor]
 		m.mode = modeList
 		manager := m.deps.Manager
@@ -483,7 +556,7 @@ func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q", "esc", "enter":
+	case "q", keyEsc, keyEnter:
 		m.mode = modeList
 		return m, nil
 	}
@@ -494,7 +567,7 @@ func (m *model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q", "esc":
+	case "q", keyEsc:
 		m.mode = modeList
 		return m, nil
 	case "f":
@@ -540,9 +613,11 @@ func (m *model) execLineCmd(line string) tea.Cmd {
 	if len(args) == 0 {
 		return nil
 	}
+	// attach takes exactly "attach <session>".
+	const attachArgc = 2
 	switch args[0] {
 	case "attach":
-		if len(args) != 2 {
+		if len(args) != attachArgc {
 			m.setFlash("usage: attach <session>")
 			return nil
 		}
@@ -586,10 +661,10 @@ func (m *model) execLineCmd(line string) tea.Cmd {
 // the dashboard when the user detaches (§11 attach round-trip).
 func (m *model) attachCmd(id string) tea.Cmd {
 	argv := m.deps.Backend.AttachArgs(id)
-	c := exec.Command(argv[0], argv[1:]...)
+	c := exec.CommandContext(context.Background(), argv[0], argv[1:]...)
 	// Strip $TMUX so attaching works when the dashboard itself runs
 	// inside the user's tmux (tmux refuses nested attach otherwise;
-	// detach from the nest with C-b C-b d).
+	// detach from the nest with C-b twice then d).
 	c.Env = tmux.AttachEnv()
 	return tea.ExecProcess(c, func(err error) tea.Msg { return attachDoneMsg{err} })
 }

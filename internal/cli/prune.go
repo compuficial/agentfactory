@@ -43,7 +43,7 @@ func newPruneCmd() *cobra.Command {
 		Use:   "prune",
 		Short: "Remove all exited/failed sessions from history",
 		Args:  exactArgs(0),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			app, err := newApp(cmd)
 			if err != nil {
 				return err

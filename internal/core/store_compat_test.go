@@ -54,9 +54,11 @@ func TestOpenStoreAcceptsForeignCompatibleSchema(t *testing.T) {
 		t.Fatalf("compatible foreign schema must open: %v", err)
 	}
 	defer store.Close()
-	sess := &AgentSession{ID: "abc123", Name: "x", Harness: "custom", Command: "true",
+	sess := &AgentSession{
+		ID: "abc123", Name: "x", Harness: "custom", Command: "true",
 		WorkDir: "/", Status: StatusExited, LogPath: "/dev/null",
-		StartedAt: time.Now(), LastActive: time.Now()}
+		StartedAt: time.Now(), LastActive: time.Now(),
+	}
 	if err := store.InsertSession(sess); err != nil {
 		t.Fatal(err)
 	}

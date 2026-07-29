@@ -144,8 +144,8 @@ func TestDetectConfig(t *testing.T) {
 	// File kill switch + per-harness rules.
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	yaml := "detect: false\nharnesses:\n  myagent:\n    command: myagent\n    detect:\n      awaiting_input: [\"foo\"]\n      working: [\"bar\"]\n"
-	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(path, []byte(yaml), 0o644); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	cfg, err = Load(path, noEnv)
 	if err != nil {
@@ -197,8 +197,8 @@ func TestSignalsConfig(t *testing.T) {
 	// File: kill switch + keyword filter.
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	yaml := "signals:\n  enabled: false\n  notify_awaiting: [\"(?i)permission\"]\n"
-	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(path, []byte(yaml), 0o644); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	cfg, err = Load(path, noEnv)
 	if err != nil {

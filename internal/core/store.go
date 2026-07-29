@@ -1,17 +1,33 @@
 package core
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	// modernc.org/sqlite registers the pure-Go "sqlite" driver with
+	// database/sql; imported for its registration side effect only.
 	_ "modernc.org/sqlite"
 )
 
 const schemaVersion = 1
+
+// colHarness is the harness column name, referenced by the schema-shape
+// checks that guard against a data dir shared with another af build.
+const colHarness = "harness"
+
+// Permissions for everything af creates on disk. All of it is
+// single-user (the data dir, session logs, harness wiring files), so
+// owner-only files and owner-plus-group dirs are the tightest safe modes.
+const (
+	dirPerm  os.FileMode = 0o750
+	filePerm os.FileMode = 0o600
+)
 
 const schema = `
 CREATE TABLE IF NOT EXISTS definitions (
@@ -56,7 +72,7 @@ type Store struct {
 // OpenStore opens (creating if needed) <dataDir>/agentfactory.db and
 // ensures the schema. Errors are exit-4 environment problems.
 func OpenStore(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, dirPerm); err != nil {
 		return nil, Errf(ExitEnv, "create data dir %s: %v", dataDir, err)
 	}
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
@@ -67,17 +83,17 @@ func OpenStore(dataDir string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1) // one write connection
 	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		db.Close()
+	if err := db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
+		_ = db.Close()
 		return nil, Errf(ExitEnv, "read db version: %v", err)
 	}
 	if version == 0 {
-		if _, err := db.Exec(schema); err != nil {
-			db.Close()
+		if _, err := db.ExecContext(context.Background(), schema); err != nil {
+			_ = db.Close()
 			return nil, Errf(ExitEnv, "create schema: %v", err)
 		}
-		if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			db.Close()
+		if _, err := db.ExecContext(context.Background(), fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+			_ = db.Close()
 			return nil, Errf(ExitEnv, "set db version: %v", err)
 		}
 		return &Store{db: db}, nil
@@ -88,36 +104,38 @@ func OpenStore(dataDir string) (*Store, error) {
 	// repair the one known gap (their v1 lacked sessions.env), then
 	// require every column we read to exist.
 	if err := ensureColumn(db, "sessions", "env", `TEXT NOT NULL DEFAULT '{}'`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, Errf(ExitEnv, "migrate sessions.env: %v", err)
 	}
 	// Pre-coordination DBs (and agentfactory-grok's) lack status_origin.
 	if err := ensureColumn(db, "sessions", "status_origin", `TEXT NOT NULL DEFAULT ''`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, Errf(ExitEnv, "migrate sessions.status_origin: %v", err)
 	}
 	// v1.2.1 renamed the `active` status to `working`; normalize rows
 	// written by older builds (or by another af build sharing this data
 	// dir). Idempotent, and reconciliation would converge them anyway —
 	// this just keeps status names consistent for --json readers.
-	if _, err := db.Exec(`UPDATE sessions SET status='working' WHERE status='active'`); err != nil {
-		db.Close()
+	if _, err := db.ExecContext(context.Background(), `UPDATE sessions SET status='working' WHERE status='active'`); err != nil {
+		_ = db.Close()
 		return nil, Errf(ExitEnv, "normalize legacy status rows: %v", err)
 	}
 	for table, cols := range map[string][]string{
-		"sessions": {"id", "name", "definition", "harness", "model", "command", "work_dir",
+		"sessions": {
+			"id", "name", "definition", colHarness, "model", "command", "work_dir",
 			"status", "pid", "pgid", "exit_code", "log_path", "service", "started_at",
-			"last_active", "ended_at", "metadata", "env", "log_offset", "status_origin"},
-		"definitions": {"name", "harness", "model", "work_dir", "env", "config", "service"},
+			"last_active", "ended_at", "metadata", "env", "log_offset", "status_origin",
+		},
+		"definitions": {"name", colHarness, "model", "work_dir", "env", "config", "service"},
 	} {
 		have, err := tableColumns(db, table)
 		if err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, Errf(ExitEnv, "inspect table %s: %v", table, err)
 		}
 		for _, col := range cols {
 			if !have[col] {
-				db.Close()
+				_ = db.Close()
 				return nil, Errf(ExitEnv,
 					"db %s has an incompatible schema (version %d, missing %s.%s) — "+
 						"if this data dir is shared with another af build, point this one elsewhere via AF_DATA_DIR",
@@ -132,14 +150,14 @@ func OpenStore(dataDir string) (*Store, error) {
 // version this build writes (§7.2). Doctor reports a mismatch; OpenStore
 // deliberately judges compatibility by shape instead.
 func (s *Store) SchemaVersion() (have, want int, err error) {
-	err = s.db.QueryRow("PRAGMA user_version").Scan(&have)
+	err = s.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&have)
 	return have, schemaVersion, err
 }
 
 // tableColumns returns the set of column names of table (empty if the
 // table does not exist).
 func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
-	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	rows, err := db.QueryContext(context.Background(), fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +186,7 @@ func ensureColumn(db *sql.DB, table, col, decl string) error {
 	if len(have) == 0 || have[col] {
 		return nil
 	}
-	_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, col, decl))
+	_, err = db.ExecContext(context.Background(), fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, col, decl))
 	return err
 }
 
@@ -212,7 +230,7 @@ func boolInt(b bool) int {
 
 // PutDefinition inserts or replaces a definition by name.
 func (s *Store) PutDefinition(d *AgentDefinition) error {
-	_, err := s.db.Exec(`INSERT INTO definitions (name, harness, model, work_dir, env, config, service)
+	_, err := s.db.ExecContext(context.Background(), `INSERT INTO definitions (name, harness, model, work_dir, env, config, service)
 		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET harness=excluded.harness, model=excluded.model,
 			work_dir=excluded.work_dir, env=excluded.env, config=excluded.config, service=excluded.service`,
@@ -225,7 +243,7 @@ func (s *Store) PutDefinition(d *AgentDefinition) error {
 
 // GetDefinition loads one definition; exit-3 error if absent.
 func (s *Store) GetDefinition(name string) (*AgentDefinition, error) {
-	row := s.db.QueryRow(`SELECT name, harness, model, work_dir, env, config, service
+	row := s.db.QueryRowContext(context.Background(), `SELECT name, harness, model, work_dir, env, config, service
 		FROM definitions WHERE name = ?`, name)
 	var d AgentDefinition
 	var env, cfg string
@@ -242,7 +260,7 @@ func (s *Store) GetDefinition(name string) (*AgentDefinition, error) {
 
 // ListDefinitions returns all definitions ordered by name.
 func (s *Store) ListDefinitions() ([]*AgentDefinition, error) {
-	rows, err := s.db.Query(`SELECT name, harness, model, work_dir, env, config, service
+	rows, err := s.db.QueryContext(context.Background(), `SELECT name, harness, model, work_dir, env, config, service
 		FROM definitions ORDER BY name`)
 	if err != nil {
 		return nil, Errf(ExitRuntime, "list definitions: %v", err)
@@ -264,7 +282,7 @@ func (s *Store) ListDefinitions() ([]*AgentDefinition, error) {
 
 // DeleteDefinition removes a definition; exit-3 error if absent.
 func (s *Store) DeleteDefinition(name string) error {
-	res, err := s.db.Exec(`DELETE FROM definitions WHERE name = ?`, name)
+	res, err := s.db.ExecContext(context.Background(), `DELETE FROM definitions WHERE name = ?`, name)
 	if err != nil {
 		return Errf(ExitRuntime, "delete definition: %v", err)
 	}
@@ -286,7 +304,7 @@ func (s *Store) InsertSession(a *AgentSession) error {
 	if a.EndedAt != nil {
 		ended = fmtTime(*a.EndedAt)
 	}
-	_, err := s.db.Exec(`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := s.db.ExecContext(context.Background(), `INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Name, a.Definition, a.Harness, a.Model, a.Command, a.WorkDir, string(a.Status),
 		a.PID, a.PGID, a.ExitCode, a.LogPath, boolInt(a.Service), fmtTime(a.StartedAt),
 		fmtTime(a.LastActive), ended, jsonMap(a.Metadata), jsonMap(a.Env), a.LogOffset, a.StatusOrigin)
@@ -302,7 +320,7 @@ func (s *Store) UpdateSession(a *AgentSession) error {
 	if a.EndedAt != nil {
 		ended = fmtTime(*a.EndedAt)
 	}
-	_, err := s.db.Exec(`UPDATE sessions SET name=?, definition=?, harness=?, model=?, command=?,
+	_, err := s.db.ExecContext(context.Background(), `UPDATE sessions SET name=?, definition=?, harness=?, model=?, command=?,
 		work_dir=?, status=?, pid=?, pgid=?, exit_code=?, log_path=?, service=?, started_at=?,
 		last_active=?, ended_at=?, metadata=?, env=?, log_offset=?, status_origin=? WHERE id=?`,
 		a.Name, a.Definition, a.Harness, a.Model, a.Command, a.WorkDir, string(a.Status),
@@ -345,9 +363,9 @@ func scanSession(scan func(...any) error) (*AgentSession, error) {
 
 // GetSession loads one session by exact ID; exit-3 error if absent.
 func (s *Store) GetSession(id string) (*AgentSession, error) {
-	row := s.db.QueryRow(`SELECT `+sessionCols+` FROM sessions WHERE id = ?`, id)
+	row := s.db.QueryRowContext(context.Background(), `SELECT `+sessionCols+` FROM sessions WHERE id = ?`, id)
 	a, err := scanSession(row.Scan)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, Errf(ExitNotFound, "session %q not found", id)
 	}
 	if err != nil {
@@ -364,7 +382,7 @@ func (s *Store) ListSessions(all bool) ([]*AgentSession, error) {
 		q += ` WHERE status NOT IN ('exited','failed')`
 	}
 	q += ` ORDER BY started_at, id`
-	rows, err := s.db.Query(q)
+	rows, err := s.db.QueryContext(context.Background(), q)
 	if err != nil {
 		return nil, Errf(ExitRuntime, "list sessions: %v", err)
 	}
@@ -382,7 +400,7 @@ func (s *Store) ListSessions(all bool) ([]*AgentSession, error) {
 
 // DeleteSession removes a session row; exit-3 error if absent.
 func (s *Store) DeleteSession(id string) error {
-	res, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	res, err := s.db.ExecContext(context.Background(), `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return Errf(ExitRuntime, "delete session: %v", err)
 	}

@@ -5,21 +5,27 @@ import (
 	"fmt"
 )
 
-const idAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+const (
+	idAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	idLength   = 6 // characters in a session ID
+)
 
 // NewID returns a 6-char lowercase [a-z0-9] ID from crypto/rand.
 // Bytes >= 252 (the largest multiple of 36 below 256) are rejected so
 // every character is uniform. Callers retry on DB collision.
 func NewID() (string, error) {
-	const limit = 252
-	id := make([]byte, 0, 6)
-	buf := make([]byte, 16)
-	for len(id) < 6 {
+	const (
+		limit       = 252 // largest multiple of len(idAlphabet) below 256
+		randBufSize = 16  // bytes drawn per rand.Read
+	)
+	id := make([]byte, 0, idLength)
+	buf := make([]byte, randBufSize)
+	for len(id) < idLength {
 		if _, err := rand.Read(buf); err != nil {
 			return "", fmt.Errorf("generate id: %w", err)
 		}
 		for _, b := range buf {
-			if b < limit && len(id) < 6 {
+			if b < limit && len(id) < idLength {
 				id = append(id, idAlphabet[int(b)%len(idAlphabet)])
 			}
 		}

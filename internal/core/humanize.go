@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// day is the largest unit shortDuration renders.
+const day = 24 * time.Hour
+
 // shortDuration renders a duration as its two most significant units
 // ("2h3m", "4m32s", "12s").
 func shortDuration(d time.Duration) string {
@@ -15,7 +18,6 @@ func shortDuration(d time.Duration) string {
 		d = 0
 	}
 	d = d.Round(time.Second)
-	day := 24 * time.Hour
 	switch {
 	case d >= day:
 		return fmt.Sprintf("%dd%dh", d/day, (d%day)/time.Hour)

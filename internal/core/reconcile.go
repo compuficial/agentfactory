@@ -27,55 +27,18 @@ func Reconcile(store *Store, backend SessionBackend, idleThreshold time.Duration
 }
 
 func reconcileOne(store *Store, backend SessionBackend, sess *AgentSession, idleThreshold time.Duration, detect map[string]*CompiledDetect, signals *CompiledSignals, now time.Time) error {
-	// 1. tmux session missing => failed (server killed externally, etc.)
-	alive, err := backend.IsAlive(sess.ID)
-	if err != nil {
+	// 1-2. Liveness: tmux session gone => failed; pane dead => exited +
+	// kill-session. Resolved here means the caller is done with this row.
+	if handled, err := reconcileLiveness(store, backend, sess, now); handled {
 		return err
-	}
-	if !alive {
-		sess.markFailed(now)
-		return store.UpdateSession(sess)
-	}
-
-	// 2. pane dead => exited(pane_dead_status), then kill-session.
-	// Query/kill errors here are session-scoped races (the session
-	// vanished mid-pass); leave this row for the next pass instead of
-	// failing everyone's reconciliation.
-	dead, code, err := backend.DeadStatus(sess.ID)
-	if err != nil {
-		return nil
-	}
-	if dead {
-		sess.markExited(code, now)
-		if err := backend.Kill(sess.ID); err != nil {
-			return nil // retry the harvest next pass; remain-on-exit holds the pane
-		}
-		return store.UpdateSession(sess)
 	}
 
 	// 3. One read of the new log bytes feeds two tiers: T1 activity
 	// (growth that contains text — idle TUIs animate, and those frames
 	// must not read as work) and T1.75 terminal signals (BEL, OSC
 	// notifications, OSC 133 marks — the app declaring its own state).
-	size := int64(0)
-	if fi, err := os.Stat(sess.LogPath); err == nil {
-		size = fi.Size()
-	}
 	prev := sess.Status
-	grew := size > sess.LogOffset
-	meaningful := false
-	var sigs StreamSignals
-	if grew {
-		if delta, ok := readLogDelta(sess.LogPath, sess.LogOffset, size); !ok {
-			meaningful = true // read problems count as activity
-		} else {
-			meaningful = MeaningfulText(delta)
-			if signals != nil {
-				sigs = ScanStreamEvents(delta, signals)
-			}
-		}
-		sess.LogOffset = size // always advance, so deltas stay small
-	}
+	grew, meaningful, sigs := readActivity(sess, signals)
 
 	// 4. Sticky-state hold (§7.1 rule 3). Signal-set state (T2) yields
 	// only to meaningful output. Term-set state additionally yields to
@@ -94,28 +57,11 @@ func reconcileOne(store *Store, backend SessionBackend, sess *AgentSession, idle
 		}
 	}
 
-	// 5. T1.75 verdicts apply immediately — a bell fires at the moment
-	// of turn end, before the session reads as quiet; gating on the
-	// idle threshold would forfeit the tier's latency win.
-	switch sigs.Verdict {
-	case SignalAttention:
-		if meaningful {
-			sess.LastActive = now
-		}
-		sess.Status = StatusAwaitingInput
-		sess.StatusOrigin = OriginTerm
-		return store.UpdateSession(sess)
-	case SignalWorking:
-		sess.LastActive = now
-		sess.Status = StatusWorking
-		sess.StatusOrigin = ""
-		return store.UpdateSession(sess)
-	}
-	if meaningful {
-		sess.LastActive = now
-		sess.Status = StatusWorking
-		sess.StatusOrigin = ""
-		return store.UpdateSession(sess)
+	// 5. T1.75 verdicts (or plain meaningful output) apply immediately —
+	// a bell fires at the moment of turn end, before the session reads as
+	// quiet; gating on the idle threshold would forfeit the latency win.
+	if resolved, err := applyStreamVerdict(store, sess, sigs, meaningful, now); resolved {
+		return err
 	}
 
 	// 6. idle vs working by threshold. A starting session has emitted no
@@ -130,30 +76,116 @@ func reconcileOne(store *Store, backend SessionBackend, sess *AgentSession, idle
 		sess.Status = StatusWorking
 	}
 
-	// 7. T1.5 detection: a quiet session whose harness has rules gets
-	// one screen capture; a matching screen reads as awaiting-input
-	// (origin detect, re-evaluated every pass — the screen ceasing to
-	// match reverts it above). An actively-streaming session is by
-	// definition not awaiting input, so no capture happens for it.
-	// Capture errors skip detection: a session-scoped race, same
-	// policy as step 2.
+	// 7. T1.5 detection: a quiet session whose harness has rules gets one
+	// screen capture; a match reads as awaiting-input (origin detect,
+	// re-evaluated every pass). A streaming session is by definition not
+	// awaiting input, so no capture happens for it.
 	if quiet {
-		rules := detect[sess.Harness]
-		if rules == nil {
-			rules = detect[UniversalDetect] // shared TUI conventions
-		}
-		if rules != nil {
-			if screen, err := backend.CapturePane(sess.ID, detectLines); err == nil && rules.AwaitingScreen(screen) {
-				sess.Status = StatusAwaitingInput
-				sess.StatusOrigin = OriginDetect
-			}
-		}
+		detectAwaiting(backend, sess, detect)
 	}
 
 	if sess.Status != prev || grew {
 		return store.UpdateSession(sess)
 	}
 	return nil
+}
+
+// reconcileLiveness handles the two terminal transitions: tmux session
+// gone (=> failed) and pane dead (=> exited + kill-session). It reports
+// whether it resolved the session (caller returns handled's err) and a
+// hard error. Query/kill errors are session-scoped races — the session
+// vanished mid-pass — so they resolve the row without failing the pass.
+func reconcileLiveness(store *Store, backend SessionBackend, sess *AgentSession, now time.Time) (handled bool, err error) {
+	alive, err := backend.IsAlive(sess.ID)
+	if err != nil {
+		return true, err
+	}
+	if !alive {
+		sess.markFailed(now)
+		return true, store.UpdateSession(sess)
+	}
+	dead, code, err := backend.DeadStatus(sess.ID)
+	if err != nil {
+		return true, nil // leave this row for the next pass
+	}
+	if dead {
+		sess.markExited(code, now)
+		if err := backend.Kill(sess.ID); err != nil {
+			return true, nil // retry the harvest next pass; remain-on-exit holds the pane
+		}
+		return true, store.UpdateSession(sess)
+	}
+	return false, nil
+}
+
+// readActivity reads the newly appended log bytes once and derives the
+// signals reconciliation needs: whether the delta held meaningful text
+// (T1) and any terminal-protocol events (T1.75). It advances
+// sess.LogOffset; grew reports whether the log file grew this pass.
+func readActivity(sess *AgentSession, signals *CompiledSignals) (grew, meaningful bool, sigs StreamSignals) {
+	size := int64(0)
+	if fi, err := os.Stat(sess.LogPath); err == nil {
+		size = fi.Size()
+	}
+	grew = size > sess.LogOffset
+	if grew {
+		if delta, ok := readLogDelta(sess.LogPath, sess.LogOffset, size); !ok {
+			meaningful = true // read problems count as activity
+		} else {
+			meaningful = MeaningfulText(delta)
+			if signals != nil {
+				sigs = ScanStreamEvents(delta, signals)
+			}
+		}
+		sess.LogOffset = size // always advance, so deltas stay small
+	}
+	return grew, meaningful, sigs
+}
+
+// applyStreamVerdict applies a T1.75 protocol verdict, or plain
+// meaningful output, to the session immediately. It reports whether it
+// resolved the session (caller returns) and the store-write error.
+func applyStreamVerdict(store *Store, sess *AgentSession, sigs StreamSignals, meaningful bool, now time.Time) (resolved bool, err error) {
+	switch sigs.Verdict {
+	case SignalAttention:
+		if meaningful {
+			sess.LastActive = now
+		}
+		sess.Status = StatusAwaitingInput
+		sess.StatusOrigin = OriginTerm
+		return true, store.UpdateSession(sess)
+	case SignalWorking:
+		sess.LastActive = now
+		sess.Status = StatusWorking
+		sess.StatusOrigin = ""
+		return true, store.UpdateSession(sess)
+	}
+	if meaningful {
+		sess.LastActive = now
+		sess.Status = StatusWorking
+		sess.StatusOrigin = ""
+		return true, store.UpdateSession(sess)
+	}
+	return false, nil
+}
+
+// detectAwaiting applies T1.5 screen-pattern detection to a quiet
+// session: one screen capture matched against the harness's rules (or
+// the universal fallback). A match flips the session to awaiting-input
+// (origin detect). Capture errors skip detection — a session-scoped
+// race, same policy as reconcileLiveness.
+func detectAwaiting(backend SessionBackend, sess *AgentSession, detect map[string]*CompiledDetect) {
+	rules := detect[sess.Harness]
+	if rules == nil {
+		rules = detect[UniversalDetect] // shared TUI conventions
+	}
+	if rules == nil {
+		return
+	}
+	if screen, err := backend.CapturePane(sess.ID, detectLines); err == nil && rules.AwaitingScreen(screen) {
+		sess.Status = StatusAwaitingInput
+		sess.StatusOrigin = OriginDetect
+	}
 }
 
 // readLogDelta returns the newly appended log bytes (capped to the
@@ -169,7 +201,7 @@ func readLogDelta(path string, from, to int64) ([]byte, bool) {
 		return nil, false
 	}
 	defer f.Close()
-	if _, err := f.Seek(from, io.SeekStart); err != nil {
+	if _, seekErr := f.Seek(from, io.SeekStart); seekErr != nil {
 		return nil, false
 	}
 	buf := make([]byte, to-from)

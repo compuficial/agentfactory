@@ -12,10 +12,12 @@ func newSendCmd() *cobra.Command {
 		noEnter bool
 		delay   time.Duration
 	)
+	// send takes <session> plus at least one word of text.
+	const sendMinArgs = 2
 	c := &cobra.Command{
 		Use:   "send <session> <text...>",
 		Short: "Inject input into a session without attaching",
-		Args:  minArgs(2),
+		Args:  minArgs(sendMinArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app, sess, err := resolveSession(cmd, args[0])
 			if err != nil {

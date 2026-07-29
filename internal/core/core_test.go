@@ -33,6 +33,7 @@ func (m *mockBackend) Attach(id string) error { return nil }
 func (m *mockBackend) CapturePane(id string, lines int) (string, error) {
 	return m.captured, nil
 }
+
 func (m *mockBackend) SendKeys(id, input string, enter bool) error {
 	m.sent = append(m.sent, input)
 	return nil
@@ -42,6 +43,7 @@ func (m *mockBackend) DeadStatus(id string) (bool, int, error) {
 	code, dead := m.dead[id]
 	return dead, code, nil
 }
+
 func (m *mockBackend) Kill(id string) error {
 	m.killed = append(m.killed, id)
 	m.alive[id] = false
@@ -98,8 +100,8 @@ func TestRenderCommand(t *testing.T) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 	// Empty render is a validation failure with exit code 1.
-	if _, err := RenderCommand(custom, AgentDefinition{Config: map[string]string{}}, ""); ExitCode(err) != ExitRuntime {
-		t.Fatalf("expected exit 1 for empty render, got %v", err)
+	if _, renderErr := RenderCommand(custom, AgentDefinition{Config: map[string]string{}}, ""); ExitCode(renderErr) != ExitRuntime {
+		t.Fatalf("expected exit 1 for empty render, got %v", renderErr)
 	}
 
 	// With a files dir, claude-code auto-wires its hooks settings file.
@@ -564,8 +566,10 @@ func TestReconcileStartingToActiveOnGrowth(t *testing.T) {
 
 func TestOpenValidation(t *testing.T) {
 	store, backend := testStore(t), newMockBackend()
-	m := &Manager{Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
-		DataDir: t.TempDir(), IdleThreshold: 5 * time.Second}
+	m := &Manager{
+		Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
+		DataDir: t.TempDir(), IdleThreshold: 5 * time.Second,
+	}
 
 	// No harness at all: usage error.
 	_, err := m.Open(OpenRequest{})
@@ -591,8 +595,10 @@ func TestOpenValidation(t *testing.T) {
 
 func TestOpenAdHocAndNameSuffix(t *testing.T) {
 	store, backend := testStore(t), newMockBackend()
-	m := &Manager{Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
-		DataDir: t.TempDir(), IdleThreshold: 5 * time.Second}
+	m := &Manager{
+		Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
+		DataDir: t.TempDir(), IdleThreshold: 5 * time.Second,
+	}
 
 	first, err := m.Open(OpenRequest{Cmd: "sleep 1", Name: "worker"})
 	if err != nil {
@@ -905,8 +911,10 @@ func TestQuoteArgs(t *testing.T) {
 
 func TestOpenExtraArgs(t *testing.T) {
 	store, backend := testStore(t), newMockBackend()
-	m := &Manager{Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
-		DataDir: t.TempDir(), IdleThreshold: 5 * time.Second}
+	m := &Manager{
+		Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
+		DataDir: t.TempDir(), IdleThreshold: 5 * time.Second,
+	}
 	sess, err := m.Open(OpenRequest{Cmd: "sleep 600", WorkDir: "/", ExtraArgs: []string{"--foo", "a b"}})
 	if err != nil {
 		t.Fatal(err)
@@ -921,8 +929,10 @@ func TestLiveMatch(t *testing.T) {
 	m := &Manager{Store: store, Backend: backend}
 	now := time.Now().UTC()
 	seed := func(id, harness, wd string, status Status, last time.Time, service bool) {
-		s := &AgentSession{ID: id, Name: id, Harness: harness, Command: "x", WorkDir: wd,
-			Status: status, Service: service, StartedAt: last, LastActive: last, LogPath: "/x"}
+		s := &AgentSession{
+			ID: id, Name: id, Harness: harness, Command: "x", WorkDir: wd,
+			Status: status, Service: service, StartedAt: last, LastActive: last, LogPath: "/x",
+		}
 		if err := store.InsertSession(s); err != nil {
 			t.Fatal(err)
 		}
