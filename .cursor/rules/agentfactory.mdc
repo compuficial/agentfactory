@@ -1,0 +1,26 @@
+---
+description: AgentFactory (af) — layout, quality gates, and conventions
+globs:
+  - "**/*.go"
+  - "Makefile"
+  - "go.mod"
+alwaysApply: false
+---
+
+Read and follow [AGENTS.md](../../AGENTS.md) for this repository.
+
+- `af` is an agent multiplexer built on tmux: daemonless, local-first.
+- Layout: `cmd/af`, `internal/{cli,core,tmux,tui,config}`. Only
+  `internal/tmux` imports tmux. Harnesses are data, never code paths.
+- Verify before done: `go build ./... && go test ./...` (`-race` for
+  concurrent code); `gofmt -l .` and `go vet ./...` clean. CI runs
+  staticcheck + tests on Linux and macOS.
+- Commit with [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/);
+  versions follow [SemVer](https://semver.org/) via release-please +
+  goreleaser. Never author AI attribution; never commit planning artifacts.
+- Skills: [mattpocock/skills](https://github.com/mattpocock/skills) +
+  [obra/superpowers](https://github.com/obra/superpowers). Grill before
+  big work; Superpowers for the delivery loop. See docs/agent-skills.md.
+- Prefer **codegraph** MCP for navigation, **rtk** for noisy shell/test
+  output, **ast-grep** for structural find/rewrite. See docs/agent-tools.md.
+- New behavior requires a test that would fail without the change.

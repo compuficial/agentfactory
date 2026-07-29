@@ -18,7 +18,8 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS  = -X agentfactory.sh/af/internal/cli.Version=$(VERSION) \
            -X agentfactory.sh/af/internal/cli.Commit=$(COMMIT)
 
-.PHONY: all help build install uninstall fresh reset test vet fmt tidy clean
+.PHONY: all help build install uninstall fresh reset test vet fmt tidy clean \
+        agent-tools agent-tools-check agent-skills agent-skills-check
 
 all: build
 
@@ -66,6 +67,18 @@ fmt: ## gofmt all packages
 
 tidy: ## go mod tidy
 	go mod tidy
+
+agent-tools: ## Install/wire rtk, codegraph, ast-grep (host agent tools)
+	./scripts/setup-agent-tools.sh
+
+agent-tools-check: ## Show rtk / codegraph / ast-grep status
+	./scripts/setup-agent-tools.sh --check
+
+agent-skills: ## Install mattpocock/skills + obra/superpowers (global)
+	./scripts/setup-agent-skills.sh --global
+
+agent-skills-check: ## List installed agent skills
+	./scripts/setup-agent-skills.sh --check
 
 clean: ## Remove local build artifacts
 	rm -f $(BINARY) cover.out

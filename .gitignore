@@ -13,6 +13,9 @@ coverage.html
 *.swp
 .DS_Store
 
+# Agent tooling — local index/cache, not source
+.codegraph/
+
 # Internal planning artifacts — never commit
 docs/design/
 docs/superpowers/

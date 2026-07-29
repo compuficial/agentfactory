@@ -87,3 +87,57 @@ tmux -L $SOCK kill-server; rm -rf $DD    # cleanup
 
 The dashboard (`af dashboard`) needs a real terminal; drive it in tests
 via `tui.NewTestModel` (see `internal/tui/tui_test.go`) instead.
+
+## Commits, versions, releases
+
+Only touch git when asked (hard rule 1). When you do, the repo runs a
+deterministic release loop:
+
+| Spec | Rule |
+|------|------|
+| [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) | Every commit message follows this format |
+| [Semantic Versioning](https://semver.org/) | Versions are `MAJOR.MINOR.PATCH` |
+| [release-please](https://github.com/googleapis/release-please) | Automates the changelog, version bumps, and tags; goreleaser publishes the binaries |
+
+- `feat:` new user-facing capability (minor) · `fix:` bug fix (patch) ·
+  `!` or `BREAKING CHANGE:` → major.
+- `docs:`, `chore:`, `refactor:`, `test:`, `ci:`, `build:` produce no
+  changelog entry / no release (per `release-please-config.json`).
+- **Never author AI or tool attribution** in commit messages.
+- **Never commit planning artifacts** — specs, design docs, working plans.
+
+Merge conventional commits to `main`; release-please opens a release PR;
+merging it publishes the tag, notes, and binaries. Don't hand-bump
+versions or edit tags.
+
+## Agent skills (mattpocock + superpowers)
+
+```sh
+make agent-skills        # global install via npx skills
+```
+
+| Need | Prefer |
+|------|--------|
+| Align before building | `/grill-me` or `/grill-with-docs` |
+| Plan → implement → review loop | Superpowers (auto-triggers) |
+| Explicit TDD on a slice | Superpowers TDD **or** `/tdd` (not both at once) |
+| Hard bug | `/systematic-debugging` |
+
+Don't skip grilling on ambiguous work. Details:
+[docs/agent-skills.md](docs/agent-skills.md).
+
+## Agent host tools (rtk + codegraph + ast-grep)
+
+```sh
+make agent-tools         # install/wire; make agent-tools-check for status
+```
+
+| Need | Tool |
+|------|------|
+| Smaller shell / test / git / lint output | **rtk** |
+| Navigate symbols, callers, blast radius | **codegraph** (MCP, before broad Grep/Read) |
+| Find or rewrite a syntax shape across files | **ast-grep** (`ast-grep -p '...' -l go`) |
+
+Discover structure with codegraph, not endless file reads; compress noisy
+output with rtk; use ast-grep only for structural search/codemods.
+Details: [docs/agent-tools.md](docs/agent-tools.md).
