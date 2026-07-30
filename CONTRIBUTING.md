@@ -193,22 +193,26 @@ Two rules that keep the suite honest:
 
 ### Pre-commit gate
 
-These must pass; CI enforces them (plus `staticcheck`):
+One command runs the whole local gate — tidy, misspell, golangci-lint
+(with `--fix`), and the race-enabled test suite:
 
 ```sh
-gofmt -l .            # must print nothing
-go vet ./...
-go test -race ./...   # or: make test
+make precommit
 ```
 
+CI runs the same via `make ci` (report-only lint, plus govulncheck, a
+crossbuild smoke, and a clean-tree check). Linters are pinned in
+`tools/go.mod`; the config is `.golangci.yml`. **Never add `//nolint`
+or disable a linter to get green — fix the code.**
+
 `make cover` gives a coverage summary; `make fuzz` runs the byte-parser
-fuzzers.
+fuzzers. `make hooks` installs the optional pre-commit + commit-msg
+hooks (conventional-commit enforcement).
 
 ### PR testing checklist
 
 - [ ] Tests accompany the change (fixtures over mocks for behavior)
-- [ ] `gofmt -l .` empty, `go vet ./...` clean, `go test -race ./...` passes
-- [ ] `staticcheck ./...` clean
+- [ ] `make precommit` passes (lint + `go test -race ./...`)
 - [ ] Harness knowledge stayed *data* — no Go branches on a harness name
 - [ ] Contract changes (exit codes, `--json` fields, status names) are called
       out explicitly in the PR

@@ -360,11 +360,14 @@ af completion fish > ~/.config/fish/completions/af.fish   # fish
 ## Development
 
 ```sh
-go test ./... -race      # integration tests use a throwaway tmux socket
+make precommit           # the gate: tidy + misspell + golangci-lint + tests (-race)
 make cover               # coverage summary
 make fuzz                # byte-parser fuzzers (~20s)
 make help
 ```
+
+Integration tests use a throwaway tmux socket — your own sessions are
+never touched.
 
 Suite design: [docs/testing.md](docs/testing.md).
 
