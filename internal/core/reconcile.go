@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-// Reconcile runs the §10.1 algorithm over every non-terminal session.
-// tmux is the runtime source of truth for liveness; the DB is updated
+// Reconcile updates every non-terminal session from runtime observations.
+// The backend is the runtime source of truth for liveness; the DB is updated
 // to match. detect holds compiled T1.5 screen-pattern rules per harness
 // and signals the T1.75 terminal-signal config (either nil = tier off).
-// Idempotent; safe to run concurrently (WAL, last-writer-wins). A
-// session whose tmux queries race away mid-pass is skipped until the
+// Idempotent; safe to run concurrently (WAL, optimistic writes). A
+// session whose backend queries race away mid-pass is skipped until the
 // next pass; environment and DB-write failures abort the pass.
 func Reconcile(store *Store, backend SessionBackend, idleThreshold time.Duration, detect map[string]*CompiledDetect, signals *CompiledSignals, now time.Time) error {
 	sessions, err := store.ListSessions(false)
@@ -27,10 +27,16 @@ func Reconcile(store *Store, backend SessionBackend, idleThreshold time.Duration
 }
 
 func reconcileOne(store *Store, backend SessionBackend, sess *AgentSession, idleThreshold time.Duration, detect map[string]*CompiledDetect, signals *CompiledSignals, now time.Time) error {
-	// 1-2. Liveness: tmux session gone => failed; pane dead => exited +
-	// kill-session. Resolved here means the caller is done with this row.
+	// 1-2. Liveness: backend session gone => failed; payload dead => exited +
+	// cleanup. Resolved here means the caller is done with this row.
 	if handled, err := reconcileLiveness(store, backend, sess, now); handled {
 		return err
+	}
+	observedStatus := sess.Status
+	observedOrigin := sess.StatusOrigin
+	observedOffset := sess.LogOffset
+	persist := func() error {
+		return store.UpdateReconciledSession(sess, observedStatus, observedOrigin, observedOffset)
 	}
 
 	// 3. One read of the new log bytes feeds two tiers: T1 activity
@@ -40,7 +46,7 @@ func reconcileOne(store *Store, backend SessionBackend, sess *AgentSession, idle
 	prev := sess.Status
 	grew, meaningful, sigs := readActivity(sess, signals)
 
-	// 4. Sticky-state hold (§7.1 rule 3). Signal-set state (T2) yields
+	// 4. Sticky-state hold. Signal-set state (T2) yields
 	// only to meaningful output. Term-set state additionally yields to
 	// new protocol events (a bell refreshes it, a command-start clears
 	// it). Detect-set state falls through — re-evaluated every pass.
@@ -51,7 +57,7 @@ func reconcileOne(store *Store, backend SessionBackend, sess *AgentSession, idle
 		}
 		if held {
 			if grew {
-				return store.UpdateSession(sess)
+				return persist()
 			}
 			return nil
 		}
@@ -60,12 +66,12 @@ func reconcileOne(store *Store, backend SessionBackend, sess *AgentSession, idle
 	// 5. T1.75 verdicts (or plain meaningful output) apply immediately —
 	// a bell fires at the moment of turn end, before the session reads as
 	// quiet; gating on the idle threshold would forfeit the latency win.
-	if resolved, err := applyStreamVerdict(store, sess, sigs, meaningful, now); resolved {
-		return err
+	if applyStreamVerdict(sess, sigs, meaningful, now) {
+		return persist()
 	}
 
 	// 6. idle vs working by threshold. A starting session has emitted no
-	// output yet, so it never reads working (§7.1 rule 1: starting ->
+	// output yet, so it never reads working (starting ->
 	// working happens on first observed growth); it stays starting until
 	// idle_threshold, then reads idle.
 	quiet := now.Sub(sess.LastActive) >= idleThreshold
@@ -85,13 +91,13 @@ func reconcileOne(store *Store, backend SessionBackend, sess *AgentSession, idle
 	}
 
 	if sess.Status != prev || grew {
-		return store.UpdateSession(sess)
+		return persist()
 	}
 	return nil
 }
 
-// reconcileLiveness handles the two terminal transitions: tmux session
-// gone (=> failed) and pane dead (=> exited + kill-session). It reports
+// reconcileLiveness handles the two terminal transitions: backend session
+// gone (=> failed) and payload dead (=> exited + cleanup). It reports
 // whether it resolved the session (caller returns handled's err) and a
 // hard error. Query/kill errors are session-scoped races — the session
 // vanished mid-pass — so they resolve the row without failing the pass.
@@ -129,15 +135,18 @@ func readActivity(sess *AgentSession, signals *CompiledSignals) (grew, meaningfu
 	}
 	grew = size > sess.LogOffset
 	if grew {
+		nextOffset := size
 		if delta, ok := readLogDelta(sess.LogPath, sess.LogOffset, size); !ok {
 			meaningful = true // read problems count as activity
 		} else {
 			meaningful = MeaningfulText(delta)
 			if signals != nil {
-				sigs = ScanStreamEvents(delta, signals)
+				var consumed int
+				sigs, consumed = scanStreamEvents(delta, signals)
+				nextOffset = size - int64(len(delta)-consumed)
 			}
 		}
-		sess.LogOffset = size // always advance, so deltas stay small
+		sess.LogOffset = nextOffset
 	}
 	return grew, meaningful, sigs
 }
@@ -145,7 +154,7 @@ func readActivity(sess *AgentSession, signals *CompiledSignals) (grew, meaningfu
 // applyStreamVerdict applies a T1.75 protocol verdict, or plain
 // meaningful output, to the session immediately. It reports whether it
 // resolved the session (caller returns) and the store-write error.
-func applyStreamVerdict(store *Store, sess *AgentSession, sigs StreamSignals, meaningful bool, now time.Time) (resolved bool, err error) {
+func applyStreamVerdict(sess *AgentSession, sigs StreamSignals, meaningful bool, now time.Time) bool {
 	switch sigs.Verdict {
 	case SignalAttention:
 		if meaningful {
@@ -153,20 +162,20 @@ func applyStreamVerdict(store *Store, sess *AgentSession, sigs StreamSignals, me
 		}
 		sess.Status = StatusAwaitingInput
 		sess.StatusOrigin = OriginTerm
-		return true, store.UpdateSession(sess)
+		return true
 	case SignalWorking:
 		sess.LastActive = now
 		sess.Status = StatusWorking
 		sess.StatusOrigin = ""
-		return true, store.UpdateSession(sess)
+		return true
 	}
 	if meaningful {
 		sess.LastActive = now
 		sess.Status = StatusWorking
 		sess.StatusOrigin = ""
-		return true, store.UpdateSession(sess)
+		return true
 	}
-	return false, nil
+	return false
 }
 
 // detectAwaiting applies T1.5 screen-pattern detection to a quiet

@@ -13,6 +13,9 @@ import (
 const (
 	// defaultLogLines is how much history `af logs` prints by default.
 	defaultLogLines = 200
+	// logReadBytes bounds memory for line-tail requests. --lines 0 remains
+	// the explicit whole-file escape hatch.
+	logReadBytes = 4 << 20
 	// followPoll is the tail -f polling cadence.
 	followPoll = 200 * time.Millisecond
 )
@@ -28,19 +31,26 @@ func newLogsCmd() *cobra.Command {
 		Short: "Print a session's captured output (cleaned of terminal escapes; --raw for bytes)",
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if lines < 0 {
+				return core.Errf(core.ExitUsage, "lines must be zero or greater, got %d", lines)
+			}
 			app, sess, err := resolveSession(cmd, args[0])
 			if err != nil {
 				return err
 			}
 			defer app.Close()
+			maxBytes := int64(0)
+			if lines > 0 {
+				maxBytes = logReadBytes
+			}
 			var data []byte
 			if raw {
-				data, err = os.ReadFile(sess.LogPath)
-				if err != nil && !os.IsNotExist(err) {
+				data, err = core.ReadLogBytes(sess.LogPath, maxBytes)
+				if err != nil {
 					return core.Errf(core.ExitRuntime, "read log: %v", err)
 				}
 			} else {
-				cleaned, err := core.ReadLogTail(sess.LogPath, 0)
+				cleaned, err := core.ReadLogTail(sess.LogPath, maxBytes)
 				if err != nil {
 					return core.Errf(core.ExitRuntime, "read log: %v", err)
 				}

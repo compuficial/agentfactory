@@ -1,5 +1,5 @@
 #!/bin/sh
-# Emits output continuously: proves the `active` status.
+# Emits output continuously: proves the `working` status.
 i=0
 while :; do
 	i=$((i + 1))

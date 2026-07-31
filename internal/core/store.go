@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -23,9 +24,9 @@ const colHarness = "harness"
 
 // Permissions for everything af creates on disk. All of it is
 // single-user (the data dir, session logs, harness wiring files), so
-// owner-only files and owner-plus-group dirs are the tightest safe modes.
+// owner-only files and directories are the tightest safe modes.
 const (
-	dirPerm  os.FileMode = 0o750
+	dirPerm  os.FileMode = 0o700
 	filePerm os.FileMode = 0o600
 )
 
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 `
 
 // Store is the SQLite-backed source of truth for identity, metadata,
-// and history. One write connection; WAL; busy_timeout 5s (§ Appendix B).
+// and history. One write connection, WAL, and a 5s busy timeout.
 type Store struct {
 	db *sql.DB
 }
@@ -75,8 +76,12 @@ func OpenStore(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, dirPerm); err != nil {
 		return nil, Errf(ExitEnv, "create data dir %s: %v", dataDir, err)
 	}
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
-		filepath.Join(dataDir, "agentfactory.db"))
+	if err := os.Chmod(dataDir, dirPerm); err != nil {
+		return nil, Errf(ExitEnv, "secure data dir %s: %v", dataDir, err)
+	}
+	dbPath := filepath.Join(dataDir, "agentfactory.db")
+	dbURL := url.URL{Scheme: "file", Path: filepath.ToSlash(dbPath)}
+	dsn := dbURL.String() + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, Errf(ExitEnv, "open db: %v", err)
@@ -87,38 +92,56 @@ func OpenStore(dataDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, Errf(ExitEnv, "read db version: %v", err)
 	}
-	if version == 0 {
-		if _, err := db.ExecContext(context.Background(), schema); err != nil {
-			_ = db.Close()
-			return nil, Errf(ExitEnv, "create schema: %v", err)
-		}
-		if _, err := db.ExecContext(context.Background(), fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			_ = db.Close()
-			return nil, Errf(ExitEnv, "set db version: %v", err)
-		}
-		return &Store{db: db}, nil
+	if err := secureStoreFiles(dbPath); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
+	var prepareErr error
+	if version == 0 {
+		prepareErr = initializeStore(db)
+	} else {
+		prepareErr = prepareExistingStore(db, dbPath, version)
+	}
+	if prepareErr != nil {
+		_ = db.Close()
+		return nil, prepareErr
+	}
+	if err := secureStoreFiles(dbPath); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
+func initializeStore(db *sql.DB) error {
+	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+		return Errf(ExitEnv, "create schema: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+		return Errf(ExitEnv, "set db version: %v", err)
+	}
+	return nil
+}
+
+func prepareExistingStore(db *sql.DB, dbPath string, version int) error {
 	// Existing DB. The data dir may be shared with another af
 	// implementation (agentfactory-grok) that versions the same file
 	// differently, so judge compatibility by shape, not version number:
 	// repair the one known gap (their v1 lacked sessions.env), then
 	// require every column we read to exist.
 	if err := ensureColumn(db, "sessions", "env", `TEXT NOT NULL DEFAULT '{}'`); err != nil {
-		_ = db.Close()
-		return nil, Errf(ExitEnv, "migrate sessions.env: %v", err)
+		return Errf(ExitEnv, "migrate sessions.env: %v", err)
 	}
 	// Pre-coordination DBs (and agentfactory-grok's) lack status_origin.
 	if err := ensureColumn(db, "sessions", "status_origin", `TEXT NOT NULL DEFAULT ''`); err != nil {
-		_ = db.Close()
-		return nil, Errf(ExitEnv, "migrate sessions.status_origin: %v", err)
+		return Errf(ExitEnv, "migrate sessions.status_origin: %v", err)
 	}
 	// v1.2.1 renamed the `active` status to `working`; normalize rows
 	// written by older builds (or by another af build sharing this data
 	// dir). Idempotent, and reconciliation would converge them anyway —
 	// this just keeps status names consistent for --json readers.
 	if _, err := db.ExecContext(context.Background(), `UPDATE sessions SET status='working' WHERE status='active'`); err != nil {
-		_ = db.Close()
-		return nil, Errf(ExitEnv, "normalize legacy status rows: %v", err)
+		return Errf(ExitEnv, "normalize legacy status rows: %v", err)
 	}
 	for table, cols := range map[string][]string{
 		"sessions": {
@@ -130,24 +153,31 @@ func OpenStore(dataDir string) (*Store, error) {
 	} {
 		have, err := tableColumns(db, table)
 		if err != nil {
-			_ = db.Close()
-			return nil, Errf(ExitEnv, "inspect table %s: %v", table, err)
+			return Errf(ExitEnv, "inspect table %s: %v", table, err)
 		}
 		for _, col := range cols {
 			if !have[col] {
-				_ = db.Close()
-				return nil, Errf(ExitEnv,
+				return Errf(ExitEnv,
 					"db %s has an incompatible schema (version %d, missing %s.%s) — "+
 						"if this data dir is shared with another af build, point this one elsewhere via AF_DATA_DIR",
-					filepath.Join(dataDir, "agentfactory.db"), version, table, col)
+					dbPath, version, table, col)
 			}
 		}
 	}
-	return &Store{db: db}, nil
+	return nil
+}
+
+func secureStoreFiles(dbPath string) error {
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(path, filePerm); err != nil && !os.IsNotExist(err) {
+			return Errf(ExitEnv, "secure db file %s: %v", path, err)
+		}
+	}
+	return nil
 }
 
 // SchemaVersion reports the db's PRAGMA user_version alongside the
-// version this build writes (§7.2). Doctor reports a mismatch; OpenStore
+// version this build writes. Doctor reports a mismatch; OpenStore
 // deliberately judges compatibility by shape instead.
 func (s *Store) SchemaVersion() (have, want int, err error) {
 	err = s.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&have)
@@ -195,12 +225,15 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // --- helpers ---
 
-func jsonMap(m map[string]string) string {
+func jsonMap(m map[string]string) (string, error) {
 	if m == nil {
 		m = map[string]string{}
 	}
-	b, _ := json.Marshal(m)
-	return string(b)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", Errf(ExitRuntime, "encode string map: %v", err)
+	}
+	return string(b), nil
 }
 
 func parseMap(s string) map[string]string {
@@ -230,11 +263,19 @@ func boolInt(b bool) int {
 
 // PutDefinition inserts or replaces a definition by name.
 func (s *Store) PutDefinition(d *AgentDefinition) error {
-	_, err := s.db.ExecContext(context.Background(), `INSERT INTO definitions (name, harness, model, work_dir, env, config, service)
+	env, err := jsonMap(d.Env)
+	if err != nil {
+		return err
+	}
+	cfg, err := jsonMap(d.Config)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(context.Background(), `INSERT INTO definitions (name, harness, model, work_dir, env, config, service)
 		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET harness=excluded.harness, model=excluded.model,
 			work_dir=excluded.work_dir, env=excluded.env, config=excluded.config, service=excluded.service`,
-		d.Name, d.Harness, d.Model, d.WorkDir, jsonMap(d.Env), jsonMap(d.Config), boolInt(d.Service))
+		d.Name, d.Harness, d.Model, d.WorkDir, env, cfg, boolInt(d.Service))
 	if err != nil {
 		return Errf(ExitRuntime, "save definition: %v", err)
 	}
@@ -300,14 +341,22 @@ const sessionCols = `id, name, definition, harness, model, command, work_dir, st
 
 // InsertSession stores a new session row.
 func (s *Store) InsertSession(a *AgentSession) error {
+	metadata, err := jsonMap(a.Metadata)
+	if err != nil {
+		return err
+	}
+	env, err := jsonMap(a.Env)
+	if err != nil {
+		return err
+	}
 	var ended any
 	if a.EndedAt != nil {
 		ended = fmtTime(*a.EndedAt)
 	}
-	_, err := s.db.ExecContext(context.Background(), `INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = s.db.ExecContext(context.Background(), `INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Name, a.Definition, a.Harness, a.Model, a.Command, a.WorkDir, string(a.Status),
 		a.PID, a.PGID, a.ExitCode, a.LogPath, boolInt(a.Service), fmtTime(a.StartedAt),
-		fmtTime(a.LastActive), ended, jsonMap(a.Metadata), jsonMap(a.Env), a.LogOffset, a.StatusOrigin)
+		fmtTime(a.LastActive), ended, metadata, env, a.LogOffset, a.StatusOrigin)
 	if err != nil {
 		return Errf(ExitRuntime, "insert session: %v", err)
 	}
@@ -316,18 +365,64 @@ func (s *Store) InsertSession(a *AgentSession) error {
 
 // UpdateSession rewrites a session row by ID.
 func (s *Store) UpdateSession(a *AgentSession) error {
+	metadata, err := jsonMap(a.Metadata)
+	if err != nil {
+		return err
+	}
+	env, err := jsonMap(a.Env)
+	if err != nil {
+		return err
+	}
 	var ended any
 	if a.EndedAt != nil {
 		ended = fmtTime(*a.EndedAt)
 	}
-	_, err := s.db.ExecContext(context.Background(), `UPDATE sessions SET name=?, definition=?, harness=?, model=?, command=?,
+	result, err := s.db.ExecContext(context.Background(), `UPDATE sessions SET name=?, definition=?, harness=?, model=?, command=?,
 		work_dir=?, status=?, pid=?, pgid=?, exit_code=?, log_path=?, service=?, started_at=?,
 		last_active=?, ended_at=?, metadata=?, env=?, log_offset=?, status_origin=? WHERE id=?`,
 		a.Name, a.Definition, a.Harness, a.Model, a.Command, a.WorkDir, string(a.Status),
 		a.PID, a.PGID, a.ExitCode, a.LogPath, boolInt(a.Service), fmtTime(a.StartedAt),
-		fmtTime(a.LastActive), ended, jsonMap(a.Metadata), jsonMap(a.Env), a.LogOffset, a.StatusOrigin, a.ID)
+		fmtTime(a.LastActive), ended, metadata, env, a.LogOffset, a.StatusOrigin, a.ID)
 	if err != nil {
 		return Errf(ExitRuntime, "update session: %v", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return Errf(ExitRuntime, "count updated session rows: %v", err)
+	}
+	if rows == 0 {
+		return Errf(ExitNotFound, "session %q not found", a.ID)
+	}
+	return nil
+}
+
+// UpdateSignal records an explicit harness signal without rewriting
+// unrelated fields from a stale session snapshot. Terminal rows win races.
+func (s *Store) UpdateSignal(id string, status Status, logOffset int64) (bool, error) {
+	result, err := s.db.ExecContext(context.Background(), `UPDATE sessions
+		SET status=?, status_origin=?, log_offset=max(log_offset, ?)
+		WHERE id=? AND status NOT IN ('exited','failed')`,
+		string(status), OriginSignal, logOffset, id)
+	if err != nil {
+		return false, Errf(ExitRuntime, "signal session: %v", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, Errf(ExitRuntime, "count signaled session rows: %v", err)
+	}
+	return rows > 0, nil
+}
+
+// UpdateReconciledSession persists a nonterminal reconciliation result only
+// when the row still matches the snapshot that produced it.
+func (s *Store) UpdateReconciledSession(a *AgentSession, observedStatus Status, observedOrigin string, observedOffset int64) error {
+	_, err := s.db.ExecContext(context.Background(), `UPDATE sessions
+		SET status=?, last_active=?, log_offset=?, status_origin=?
+		WHERE id=? AND status=? AND status_origin=? AND log_offset=?`,
+		string(a.Status), fmtTime(a.LastActive), a.LogOffset, a.StatusOrigin,
+		a.ID, string(observedStatus), observedOrigin, observedOffset)
+	if err != nil {
+		return Errf(ExitRuntime, "reconcile session: %v", err)
 	}
 	return nil
 }

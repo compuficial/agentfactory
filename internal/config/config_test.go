@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"agentfactory.sh/af/internal/core"
 )
 
 func noEnv(string) string { return "" }
@@ -109,16 +113,53 @@ func TestUnknownKeysWarnNotError(t *testing.T) {
 
 func TestBadDurationIsError(t *testing.T) {
 	path := writeConfig(t, "idle_threshold: banana\n")
-	if _, err := Load(path, noEnv); err == nil {
-		t.Fatal("expected an error for an invalid duration")
+	if _, err := Load(path, noEnv); core.ExitCode(err) != core.ExitEnv {
+		t.Fatalf("invalid file duration exit code = %d, want %d: %v", core.ExitCode(err), core.ExitEnv, err)
 	}
 	if _, err := Load("", func(k string) string {
 		if k == "AF_SEND_DELAY" {
 			return "banana"
 		}
 		return ""
-	}); err == nil {
-		t.Fatal("expected an error for an invalid env duration")
+	}); core.ExitCode(err) != core.ExitEnv {
+		t.Fatalf("invalid env duration exit code = %d, want %d: %v", core.ExitCode(err), core.ExitEnv, err)
+	}
+}
+
+func TestNonPositiveDurationsAreEnvironmentErrors(t *testing.T) {
+	for name, content := range map[string]string{
+		"idle threshold": "idle_threshold: 0s\n",
+		"close timeout":  "close_timeout: -1s\n",
+		"send delay":     "send_delay: 0s\n",
+		"tui tick":       "tui:\n  tick: -1ms\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, content), noEnv)
+			if core.ExitCode(err) != core.ExitEnv {
+				t.Fatalf("exit code = %d, want %d: %v", core.ExitCode(err), core.ExitEnv, err)
+			}
+		})
+	}
+}
+
+func TestResolvedIncludesSignalFilters(t *testing.T) {
+	enabled := true
+	cfg := Defaults()
+	cfg.Signals = SignalsConfig{
+		Enabled:        &enabled,
+		NotifyAwaiting: []string{"permission", "approval"},
+	}
+	var got struct {
+		Signals struct {
+			Enabled        bool     `yaml:"enabled"`
+			NotifyAwaiting []string `yaml:"notify_awaiting"`
+		} `yaml:"signals"`
+	}
+	if err := yaml.Unmarshal([]byte(cfg.Resolved()), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Signals.Enabled || len(got.Signals.NotifyAwaiting) != 2 || got.Signals.NotifyAwaiting[1] != "approval" {
+		t.Fatalf("resolved signals incomplete: %+v", got.Signals)
 	}
 }
 

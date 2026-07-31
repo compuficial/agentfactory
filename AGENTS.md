@@ -13,7 +13,7 @@ built on tmux. Go CLI + Bubble Tea TUI. Design rationale:
 
 ```sh
 make build                 # build ./af
-make precommit             # the gate: tidy + misspell + golangci-lint (--fix) + go test -race
+make precommit             # tidy + text/docs/shell + format + lint (--fix) + go test -race
 make ci                    # precommit (report-only lint) + govulncheck + crossbuild + clean tree
 make cover                 # coverage summary
 make fuzz                  # byte-parser fuzzers (~20s)
@@ -55,8 +55,10 @@ Keep it that way.
 4. **CLI output goes to `cmd.OutOrStdout()` / `cmd.ErrOrStderr()`**,
    never `os.Stdout`. The TUI command bar runs commands in-process
    through the same cobra root and captures those writers.
-5. **Nothing above `internal/tmux` mentions tmux.** New backend
-   capabilities extend the `SessionBackend` interface (spec §6).
+5. **Keep tmux behind `SessionBackend`.** Core and TUI code use only the
+   interface; CLI composition and environment probing are the narrow
+   implementation-aware exceptions. Extend the interface for new runtime
+   substrate capabilities.
 6. **tmux is the source of truth for liveness; SQLite for identity and
    history.** Any command that answers questions about sessions must
    reconcile first (`newApp` does this — use it).
@@ -73,7 +75,7 @@ Keep it that way.
 - Comments explain constraints and *why* — not what the next line does.
 - Match the existing voice in help strings: short, lowercase-ish,
   imperative ("Print a session's captured output").
-- `gofmt`; exported identifiers carry doc comments.
+- `gofumpt` + `goimports`; exported identifiers carry doc comments.
 
 ## Verifying a change end-to-end
 

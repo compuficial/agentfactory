@@ -88,6 +88,22 @@ func TestLaunchResolvesResumesAndPassesArgs(t *testing.T) {
 	}
 }
 
+func TestResolveLaunchPropagatesDefinitionLookupFailure(t *testing.T) {
+	testEnv(t)
+	app := launchTestApp(t)
+	if err := app.Store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := resolveLaunch(app, "sh", nil, launchOpts{})
+	if err == nil {
+		t.Fatal("closed store must make definition lookup fail")
+	}
+	if !strings.Contains(err.Error(), "load definition") {
+		t.Fatalf("definition lookup failure was replaced by fallback error: %v", err)
+	}
+}
+
 func baseName(p string) string {
 	if i := strings.LastIndexByte(p, '/'); i >= 0 {
 		return p[i+1:]

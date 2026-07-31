@@ -79,26 +79,34 @@ func MeaningfulText(data []byte) bool {
 	return false
 }
 
-// ReadLogTail reads at most maxBytes from the end of the log file and
-// returns it sanitized for display. maxBytes <= 0 reads the whole file.
-// A missing file is an empty log.
-func ReadLogTail(path string, maxBytes int64) (string, error) {
+// ReadLogBytes reads at most maxBytes from the end of a log. maxBytes <= 0
+// reads the whole file. A missing file is an empty log.
+func ReadLogBytes(path string, maxBytes int64) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", nil
+			return nil, nil
 		}
-		return "", err
+		return nil, err
 	}
 	defer f.Close()
 	if maxBytes > 0 {
 		if fi, statErr := f.Stat(); statErr == nil && fi.Size() > maxBytes {
 			if _, seekErr := f.Seek(fi.Size()-maxBytes, io.SeekStart); seekErr != nil {
-				return "", seekErr
+				return nil, seekErr
 			}
 		}
 	}
 	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// ReadLogTail reads a bounded raw tail and sanitizes it for display.
+func ReadLogTail(path string, maxBytes int64) (string, error) {
+	data, err := ReadLogBytes(path, maxBytes)
 	if err != nil {
 		return "", err
 	}

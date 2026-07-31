@@ -28,7 +28,7 @@ func newDefineCmd() *cobra.Command {
 		open    bool
 	)
 	c := &cobra.Command{
-		Use:   "define <name>",
+		Use:   commandDefine + " <name>",
 		Short: "Create or update (upsert) a reusable agent definition",
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// T1.75 terminal signals (spec v1.2): the session's own protocol
+// T1.75 terminal signals let the session's own protocol
 // stream — BEL, OSC 9/777 notifications, OSC 133 prompt marks —
 // declares state that screen patterns can only guess. Phase 0 verified
 // every sequence survives into the pipe-pane log, so extraction is a
@@ -68,29 +68,40 @@ func (c *CompiledSignals) notifyMatches(payload string) bool {
 	return false
 }
 
-// ScanStreamEvents scans raw session output for terminal-protocol
-// signals. Tolerant by design: unknown escapes are skipped, and an OSC
-// truncated at the buffer edge ends the scan (the next delta re-reads
-// nothing — same latitude the T1 heuristic accepts for its text check).
-// A BEL that terminates an OSC is a terminator, not a bell.
+// ScanStreamEvents scans raw session output for terminal-protocol signals.
+// Tolerant by design: unknown escapes are skipped. A BEL that terminates an
+// OSC is a terminator, not a bell.
 func ScanStreamEvents(buf []byte, cfg *CompiledSignals) StreamSignals {
+	out, _ := scanStreamEvents(buf, cfg)
+	return out
+}
+
+// scanStreamEvents also returns the length of the complete prefix. An OSC
+// split at the buffer edge is excluded so reconciliation can re-read it.
+func scanStreamEvents(buf []byte, cfg *CompiledSignals) (StreamSignals, int) {
 	var out StreamSignals
 	for i := 0; i < len(buf); i++ {
 		switch buf[i] {
 		case bel: // standalone BEL
 			out.Verdict = SignalAttention
 		case esc: // ESC
-			if i+1 >= len(buf) || buf[i+1] != ']' {
+			if i+1 >= len(buf) {
+				return out, i
+			}
+			if buf[i+1] != ']' {
 				continue // not an OSC; other escapes pass through
 			}
 			content, end, ok := parseOSC(buf, i+oscPrefixLen)
+			if !ok && end == len(buf) {
+				return out, i
+			}
 			i = end
 			if ok {
 				classifyOSC(content, cfg, &out)
 			}
 		}
 	}
-	return out
+	return out, len(buf)
 }
 
 // parseOSC consumes an OSC body starting at buf[start] up to its BEL or
@@ -108,6 +119,9 @@ func parseOSC(buf []byte, start int) (content string, next int, ok bool) {
 		case esc:
 			if j+1 < len(buf) && buf[j+1] == '\\' {
 				return string(buf[start:j]), j + 1, true
+			}
+			if j+1 >= len(buf) {
+				return "", len(buf), false
 			}
 			return "", j - 1, false // abort; rescan from this ESC
 		}

@@ -26,6 +26,12 @@ Or:
 
 Requires [Node.js](https://nodejs.org/) (`npx`).
 
+> **Trust boundary:** these commands resolve `skills@latest` and install
+> third-party code into an agent or this repository. Even
+> `make agent-skills-check` invokes `npx` and may fetch current registry
+> content. Review the upstream packs and pin an approved installer version in
+> the script when your environment requires reproducible host tooling.
+
 ### After install (required once per repo)
 
 In the agent chat, run:

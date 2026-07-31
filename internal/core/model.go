@@ -52,24 +52,20 @@ func (d *AgentDefinition) SeedFromSession(s *AgentSession) {
 	d.Model = s.Model
 	d.WorkDir = s.WorkDir
 	d.Service = s.Service
-	if d.Env == nil {
-		d.Env = map[string]string{}
-	}
+	d.Env = map[string]string{}
 	for k, v := range s.Env {
 		if k == EnvSessionID || k == EnvSessionName {
 			continue
 		}
 		d.Env[k] = v
 	}
+	d.Config = map[string]string{}
 	if s.Harness == HarnessCustom {
-		if d.Config == nil {
-			d.Config = map[string]string{}
-		}
 		d.Config["cmd"] = s.Command
 	}
 }
 
-// Status is a session's lifecycle state (spec §7.1).
+// Status is a session's lifecycle state.
 type Status string
 
 // Session statuses; Exited and Failed are terminal.
@@ -87,7 +83,7 @@ const (
 func (s Status) Terminal() bool { return s == StatusExited || s == StatusFailed }
 
 // Sticky reports whether s is a harness-reported state that the T1
-// heuristic must not overwrite on its own (§7.1 rule 3): awaiting-input
+// heuristic must not overwrite on its own: awaiting-input
 // (blocked on the user) and done (task complete, payload still alive).
 func (s Status) Sticky() bool { return s == StatusAwaitingInput || s == StatusDone }
 
@@ -113,7 +109,7 @@ func ParseStatus(s string) (Status, error) {
 }
 
 // AgentSession is a running (or ended) instance launched from a
-// definition or ad-hoc flags. The tmux session name is "af-"+ID.
+// definition or ad-hoc flags. Backends derive their runtime identity from ID.
 type AgentSession struct {
 	ID         string
 	Name       string
@@ -152,18 +148,28 @@ func (a *AgentSession) markExited(code int, t time.Time) {
 	a.EndedAt = &t
 }
 
-// markFailed records the substrate losing the session at t (tmux gone
+// markFailed records the substrate losing the session at t (runtime gone
 // without a harvestable exit); ExitCode deliberately stays nil.
 func (a *AgentSession) markFailed(t time.Time) {
 	a.Status = StatusFailed
 	a.EndedAt = &t
 }
 
-// SessionBackend is the substrate interface. v0.1 ships exactly one
-// implementation: tmux on a dedicated socket.
+// AttachSpec describes a process that connects the user's terminal to a
+// managed session. Argv includes argv[0]; Env is the complete environment.
+type AttachSpec struct {
+	Path string
+	Argv []string
+	Env  []string
+}
+
+// SessionBackend is the runtime substrate interface.
 type SessionBackend interface {
-	Create(sess *AgentSession) error                  // detached session, -c workdir
-	Attach(id string) error                           // execs into tmux attach
+	Create(sess *AgentSession) error             // detached session, -c workdir
+	Attach(id string) error                      // connects the current terminal
+	PrepareAttach(id string) (AttachSpec, error) // process spec for TUI round-trips
+	SyncSize(id string, width, height int) (bool, error)
+	SetSendDelay(delay time.Duration)
 	CapturePane(id string, lines int) (string, error) // lines<=0 = full visible screen
 	SendKeys(id string, input string, enter bool) error
 	IsAlive(id string) (bool, error)

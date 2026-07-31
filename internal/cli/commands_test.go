@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -77,7 +78,9 @@ func TestCloseUsesQuitKeys(t *testing.T) {
 	testEnv(t)
 	// A user-defined harness from the config file, with quit_keys.
 	confDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agentfactory")
-	os.MkdirAll(confDir, 0o755)
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	conf := fmt.Sprintf("harnesses:\n  quitter:\n    command: %q\n    quit_keys: [\"quit\"]\n", "sh "+fixture(t, "quitter.sh"))
 	if err := os.WriteFile(filepath.Join(confDir, "config.yaml"), []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
@@ -337,7 +340,7 @@ func TestRmAndPrune(t *testing.T) {
 	}
 }
 
-// TestStatusJSONGolden pins the §8.3 byte shape with fully
+// TestStatusJSONGolden pins the stable byte shape with fully
 // deterministic session data.
 func TestStatusJSONGolden(t *testing.T) {
 	testEnv(t)
@@ -391,7 +394,7 @@ func TestSocketFlagOverridesEnv(t *testing.T) {
 	testEnv(t)
 	override := os.Getenv("AF_SOCKET") + "-flag"
 	t.Cleanup(func() {
-		exec.Command("tmux", "-L", override, "kill-server").Run()
+		_ = exec.CommandContext(context.Background(), "tmux", "-L", override, "kill-server").Run()
 		os.Remove(filepath.Join(fmt.Sprintf("/tmp/tmux-%d", os.Getuid()), override))
 	})
 	out, _, code := runAF(t, "--socket", override, "open", "--cmd", "sleep 30", "-q")

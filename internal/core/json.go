@@ -2,8 +2,8 @@ package core
 
 import "time"
 
-// SessionJSON is the normative af status --json shape (§8.3). Field
-// order matches the spec example.
+// SessionJSON is the stable af status --json shape. Field order is part of
+// the wire contract pinned by the golden test.
 type SessionJSON struct {
 	ID         string            `json:"id"`
 	Name       string            `json:"name"`
@@ -24,7 +24,7 @@ type SessionJSON struct {
 	Metadata   map[string]string `json:"metadata"`
 }
 
-// JSON converts the session to its stable §8.3 wire shape.
+// JSON converts the session to its stable wire shape.
 func (a *AgentSession) JSON() SessionJSON {
 	out := SessionJSON{
 		ID:         a.ID,

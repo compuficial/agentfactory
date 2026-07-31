@@ -18,9 +18,9 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS  = -X agentfactory.sh/af/internal/cli.Version=$(VERSION) \
            -X agentfactory.sh/af/internal/cli.Commit=$(COMMIT)
 
-.PHONY: all help build install uninstall fresh reset test vet fmt tidy clean \
-        agent-tools agent-tools-check agent-skills agent-skills-check \
-        precommit ci mod spell lint vuln crossbuild diff hooks
+.PHONY: all help build install uninstall fresh reset test vet fmt fmt-check tidy clean \
+	agent-tools agent-tools-check agent-skills agent-skills-project agent-skills-check \
+	precommit ci mod spell shell workflow docs lint vuln crossbuild diff hooks
 
 all: build
 
@@ -42,6 +42,16 @@ uninstall: ## Remove af and its completion from $(PREFIX)
 	rm -f $(BINDIR)/$(BINARY) $(PREFIX)/share/bash-completion/completions/$(BINARY)
 
 reset: ## Wipe all state: kill the af tmux server + delete data dir (db, logs)
+	@data_dir='$(DATA_DIR)'; \
+	if [ -d "$$data_dir" ]; then canonical=$$(cd "$$data_dir" && pwd -P); \
+	elif [ -e "$$data_dir" ]; then echo "refusing non-directory DATA_DIR=$$data_dir" >&2; exit 2; \
+	else canonical="$$data_dir"; fi; \
+	home=$$(cd "$(HOME)" && pwd -P); \
+	repo=$$(pwd -P); \
+	case "$$canonical" in ""|/|.|..|/*) ;; *) canonical="$$repo/$$canonical" ;; esac; \
+	case "$$canonical" in ""|/|.|..|"$$home"|"$$repo") echo "refusing unsafe DATA_DIR=$$canonical" >&2; exit 2 ;; esac; \
+	case "$$canonical" in /*/*) ;; *) echo "refusing shallow DATA_DIR=$$canonical" >&2; exit 2 ;; esac; \
+	case "$$repo" in "$$canonical"|"$$canonical"/*) echo "refusing DATA_DIR containing repository: $$canonical" >&2; exit 2 ;; esac
 	@echo "resetting socket=$(SOCKET) data_dir=$(DATA_DIR)"
 	@tmux -L "$(SOCKET)" kill-server 2>/dev/null || true
 	@rm -rf "$(DATA_DIR)"
@@ -63,8 +73,11 @@ test: ## Run tests with -race
 vet: ## go vet
 	go vet ./...
 
-fmt: ## gofmt all packages
-	gofmt -s -w .
+fmt: ## gofumpt + goimports all packages
+	go tool $(TOOLMOD) golangci-lint fmt ./...
+
+fmt-check: ## Check gofumpt + goimports formatting
+	go tool $(TOOLMOD) golangci-lint fmt --diff ./...
 
 tidy: ## go mod tidy
 	go mod tidy
@@ -78,6 +91,9 @@ agent-tools-check: ## Show rtk / codegraph / ast-grep status
 agent-skills: ## Install mattpocock/skills + obra/superpowers (global)
 	./scripts/setup-agent-skills.sh --global
 
+agent-skills-project: ## Install agent skills into this repository
+	./scripts/setup-agent-skills.sh --project
+
 agent-skills-check: ## List installed agent skills
 	./scripts/setup-agent-skills.sh --check
 
@@ -85,7 +101,7 @@ agent-skills-check: ## List installed agent skills
 TOOLMOD    := -modfile=tools/go.mod
 LINT_FLAGS ?= --fix
 
-precommit: mod spell lint test ## Local gate: tidy + spell + lint(fix) + test
+precommit: mod spell shell workflow docs fmt-check lint test ## Local gate: tidy + text/shell/workflow/docs + format + lint(fix) + test
 
 ci: LINT_FLAGS =
 ci: precommit vuln crossbuild diff ## CI gate: precommit (report-only) + vuln + crossbuild + clean tree
@@ -94,8 +110,24 @@ mod: ## go mod tidy (main + tools modules)
 	go mod tidy
 	go -C tools mod tidy
 
-spell: ## misspell markdown files (US locale)
-	@find . -name '*.md' ! -path './.git/*' -exec go tool $(TOOLMOD) misspell -error -locale=US {} +
+spell: ## misspell repository text (US locale)
+	@find . -type f \( -name '*.md' -o -name '*.txt' -o -name '*.html' -o -name '*.sh' -o -name '*.yml' -o -name '*.yaml' \) \
+		! -path './.git/*' ! -path './.codegraph/*' ! -path './.agents/*' \
+		! -path './.codex/*' ! -path './.claude/*' ! -path './vendor/*' \
+		-exec go tool $(TOOLMOD) misspell -error -locale=US {} +
+
+shell: ## Parse-check shell scripts and fixtures
+	@for file in scripts/*.sh testdata/fixtures/*.sh site/install.sh; do \
+		[ -f "$$file" ] || continue; \
+		case "$$(head -n 1 "$$file")" in *bash*) bash -n "$$file" ;; *) sh -n "$$file" ;; esac; \
+	done
+
+workflow: ## Enforce immutable, labeled GitHub Action refs
+	./scripts/check-workflow-actions_test.sh
+	./scripts/check-workflow-actions.sh
+
+docs: ## Check local Markdown links
+	./scripts/check-doc-links.sh
 
 lint: ## golangci-lint (fixes locally; report-only under make ci)
 	go tool $(TOOLMOD) golangci-lint run $(LINT_FLAGS) ./...
@@ -111,7 +143,7 @@ diff: ## fail if the working tree is dirty
 	@res=$$(git status --porcelain); if [ -n "$$res" ]; then echo "$$res"; exit 1; fi
 
 hooks: ## install pre-commit + commit-msg hooks
-	pre-commit install --hook-types pre-commit --hook-types commit-msg
+	pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 clean: ## Remove local build artifacts
 	rm -f $(BINARY) cover.out

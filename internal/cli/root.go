@@ -21,6 +21,11 @@ var (
 	Commit  = "none"
 )
 
+const (
+	commandDefine = "define"
+	commandWait   = "wait"
+)
+
 // NewRoot builds the af command tree.
 func NewRoot() *cobra.Command {
 	var opts launchOpts
@@ -40,6 +45,9 @@ and attaches. Anything after the agent name is passed to it verbatim
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+			if err := refuseInsideSession("agent launch"); err != nil {
+				return err
+			}
 			// args[0] is not a known subcommand (cobra would have
 			// dispatched); treat it as a frictionless agent launch.
 			app, err := newApp(cmd)
@@ -51,6 +59,7 @@ and attaches. Anything after the agent name is passed to it verbatim
 				app.Close()
 				return err
 			}
+			writeNestedAttachHint(cmd)
 			app.Close() // release the DB before exec replaces the process
 			return app.Backend.Attach(sess.ID)
 		},
@@ -84,7 +93,7 @@ func writeJSON(cmd *cobra.Command, v any) error {
 	return enc.Encode(v)
 }
 
-// printOpened reports a freshly opened session (ID only with -q, §8.2).
+// printOpened reports a freshly opened session (ID only with -q).
 func printOpened(cmd *cobra.Command, sess *core.AgentSession, quiet bool) {
 	if quiet {
 		fmt.Fprintln(cmd.OutOrStdout(), sess.ID)
@@ -123,6 +132,13 @@ func refuseInsideSession(what string) error {
 	return nil
 }
 
+func writeNestedAttachHint(cmd *cobra.Command) {
+	if os.Getenv("TMUX") != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(),
+			"af: nested inside tmux — detach with C-b twice then d (the doubled prefix reaches the inner session)")
+	}
+}
+
 // exactArgs is cobra.ExactArgs with exit code 2.
 func exactArgs(n int) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
@@ -156,7 +172,7 @@ func minArgs(n int) cobra.PositionalArgs {
 type App struct {
 	Config  *config.Config
 	Store   *core.Store
-	Backend *tmux.Backend
+	Backend core.SessionBackend
 	Manager *core.Manager
 }
 

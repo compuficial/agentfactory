@@ -3,51 +3,96 @@ linters:
   default: none
   enable:
     - asasalint
+    - asciicheck
     - bodyclose
+    - bidichk
+    - canonicalheader
+    - containedctx
     - copyloopvar
     - dogsled
+    - depguard
     - dupl
     - dupword
+    - durationcheck
     - errcheck
+    - errchkjson
+    - errname
     - errorlint
+    - fatcontext
+    - forbidigo
+    - forcetypeassert
     - funlen
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gocognit
     - goconst
     - gocritic
     - gocyclo
     - godot
+    - godoclint
+    - gomoddirectives
     - goprintffuncname
     - gosec
     - govet
+    - iface
     - ineffassign
+    - inamedparam
+    - interfacebloat
+    - intrange
+    - iotamixing
+    - maintidx
+    - makezero
     - misspell
+    - mirror
     - mnd
+    - modernize
+    - musttag
     - nakedret
+    - nilerr
+    - nilnesserr
+    - nilnil
     - noctx
     - nolintlint
+    - nosprintfhostport
     - perfsprint
+    - predeclared
+    - reassign
+    - recvcheck
     - revive
     - rowserrcheck
     - sqlclosecheck
     - staticcheck
+    - thelper
     - unconvert
     - unparam
+    - unqueryvet
     - unused
     - usestdlibvars
     - usetesting
+    - wastedassign
     - whitespace
   settings:
+    depguard:
+      rules:
+        backend-boundary:
+          files:
+            - "**/internal/core/*.go"
+            - "**/internal/tui/*.go"
+            - "!**/*_test.go"
+          deny:
+            - pkg: agentfactory.sh/af/internal/tmux
+              desc: core and TUI runtime code depend on core.SessionBackend, not tmux
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: os\.(Stdout|Stderr)
+          pkg: ^os$
+          msg: commands write through Cobra or Bubble Tea writers
     funlen:
       lines: 100
       statements: 50
     gocyclo:
       min-complexity: 15
-    gosec:
-      excludes:
-        # af is a subprocess/file tool: it execs tmux with dynamic args
-        # (G204) and opens session logs by path (G304). Both are inherent
-        # to the design, not fixable in code without inline suppressions.
-        - G204
-        - G304
     govet:
       disable:
         - fieldalignment
@@ -65,18 +110,56 @@ linters:
     presets:
       - std-error-handling
     rules:
+      # Audited file boundaries: paths are generated from af-owned session
+      # IDs or persisted af state, not arbitrary file contents.
+      - path: internal/core/ops\.go
+        source: os\.OpenFile\(logPath,
+        linters: [gosec]
+      - path: internal/core/reconcile\.go
+        source: os\.Open\(path\)
+        linters: [gosec]
+      - path: internal/core/sanitize\.go
+        source: os\.Open\(path\)
+        linters: [gosec]
+      - path: internal/cli/logs\.go
+        source: os\.Open\(path\)
+        linters: [gosec]
+      - path: internal/config/config\.go
+        source: os\.ReadFile\(path\)
+        linters: [gosec]
+      # Audited process boundaries: argv is constructed by the backend and
+      # executed without invoking a user-selected executable or shell here.
+      - path: internal/tmux/tmux\.go
+        source: exec\.CommandContext\(context\.Background\(\), tmuxBinary,
+        linters: [gosec]
+      - path: internal/tmux/tmux\.go
+        source: syscall\.Exec\(spec\.Path, spec\.Argv, spec\.Env\)
+        linters: [gosec]
+      - path: internal/tui/tui\.go
+        source: exec\.CommandContext\(context\.Background\(\), spec\.Path,
+        linters: [gosec]
+      # These two nil returns deliberately classify backend races as
+      # session-scoped and leave reconciliation to retry on its next pass.
+      - path: internal/core/reconcile\.go
+        source: return true, nil // (leave this row|retry the harvest)
+        linters: [nilerr]
+      # A nil match is the established "start a new session" result.
+      - path: internal/cli/launch\.go
+        source: return nil, nil
+        linters: [nilnil]
+      # main is the process boundary and owns the one direct stderr write.
+      - path: cmd/af/main\.go
+        linters: [forbidigo]
       # Table-driven tests legitimately trip length, duplication, and
       # magic-number linters; keep them focused on production code.
       - path: _test\.go
         linters:
           - dupl
-          - errcheck
           - funlen
           - goconst
           - gocyclo
           - gosec
           - mnd
-          - noctx
           - revive
 formatters:
   enable:

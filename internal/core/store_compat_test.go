@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -17,10 +18,10 @@ func rawDB(t *testing.T, dir, ddl string, version int) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(ddl); err != nil {
+	if _, err := db.ExecContext(context.Background(), ddl); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("PRAGMA user_version = " + itoa(version)); err != nil {
+	if _, err := db.ExecContext(context.Background(), "PRAGMA user_version = "+itoa(version)); err != nil {
 		t.Fatal(err)
 	}
 }

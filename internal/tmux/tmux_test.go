@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"os"
@@ -25,7 +26,7 @@ func testBackend(t *testing.T) *Backend {
 	rand.Read(buf)
 	socket := "af-tmuxtest-" + hex.EncodeToString(buf)
 	t.Cleanup(func() {
-		exec.Command("tmux", "-L", socket, "kill-server").Run()
+		_ = exec.CommandContext(context.Background(), "tmux", "-L", socket, "kill-server").Run()
 	})
 	return New(socket, 50*time.Millisecond)
 }
@@ -98,6 +99,57 @@ func TestCreateLifecycle(t *testing.T) {
 	}
 	if alive, _ := b.IsAlive(sess.ID); alive {
 		t.Fatal("killed session must be gone")
+	}
+}
+
+func TestCreateRollsBackSessionAfterSetupFailure(t *testing.T) {
+	fakeDir := t.TempDir()
+	statePath := filepath.Join(fakeDir, "session-state")
+	fakeTmux := filepath.Join(fakeDir, "tmux")
+	fakeScript := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-L|-f) shift 2 ;;
+		*) break ;;
+	esac
+done
+case "$1" in
+	start-server|pipe-pane) exit 0 ;;
+	new-session) : > "$AF_FAKE_TMUX_STATE" ;;
+	kill-session) rm -f "$AF_FAKE_TMUX_STATE" ;;
+	has-session) test -f "$AF_FAKE_TMUX_STATE" ;;
+	list-panes) printf '12345\n' ;;
+	*) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(fakeTmux, []byte(fakeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AF_FAKE_TMUX_STATE", statePath)
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	backend := New("fake-socket", 0)
+	blockedParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedParent, []byte("block child paths"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sess := &core.AgentSession{
+		ID:      "rollback001",
+		Name:    "rollback",
+		Command: "sleep 600",
+		WorkDir: t.TempDir(),
+		LogPath: filepath.Join(blockedParent, "session.log"),
+		Env:     map[string]string{"AF_SESSION_ID": "rollback001"},
+	}
+
+	if err := backend.Create(sess); err == nil {
+		t.Fatal("Create must fail when it cannot release the payload gate")
+	}
+	alive, err := backend.IsAlive(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alive {
+		t.Fatal("failed Create left an orphaned tmux session")
 	}
 }
 
@@ -184,5 +236,58 @@ func TestAttachEnvStripsTmuxVars(t *testing.T) {
 	}
 	if !slices.Contains(env, "AF_KEEP_ME=yes") {
 		t.Fatal("AttachEnv must keep unrelated variables")
+	}
+}
+
+func TestPrepareAttachReturnsSanitizedCommand(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	t.Setenv("TMUX_PANE", "%1")
+	t.Setenv("AF_KEEP_ME", "yes")
+
+	spec, err := New("attach-socket", 0).PrepareAttach("abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(spec.Path) != "tmux" {
+		t.Fatalf("attach executable = %q, want tmux", spec.Path)
+	}
+	wantArgv := []string{
+		"tmux", "-L", "attach-socket", "-f", "/dev/null",
+		"set-option", "-w", "-t", "=af-abc123:", "window-size", "latest", ";",
+		"attach-session", "-t", "=af-abc123",
+	}
+	if !slices.Equal(spec.Argv, wantArgv) {
+		t.Fatalf("attach argv = %v, want %v", spec.Argv, wantArgv)
+	}
+	for _, value := range spec.Env {
+		if strings.HasPrefix(value, "TMUX=") || strings.HasPrefix(value, "TMUX_PANE=") {
+			t.Fatalf("attach environment retained %q", value)
+		}
+	}
+	if !slices.Contains(spec.Env, "AF_KEEP_ME=yes") {
+		t.Fatal("attach environment dropped unrelated variables")
+	}
+}
+
+func TestIsAliveDistinguishesMissingSessionFromCommandFailure(t *testing.T) {
+	fakeDir := t.TempDir()
+	fakeTmux := filepath.Join(fakeDir, "tmux")
+	if err := os.WriteFile(fakeTmux, []byte(`#!/bin/sh
+printf 'permission denied\n' >&2
+exit "${AF_FAKE_TMUX_EXIT:-1}"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	backend := New("fake-socket", 0)
+
+	t.Setenv("AF_FAKE_TMUX_EXIT", "1")
+	if alive, err := backend.IsAlive("missing"); err != nil || alive {
+		t.Fatalf("exit 1 must mean missing session, got alive=%v err=%v", alive, err)
+	}
+
+	t.Setenv("AF_FAKE_TMUX_EXIT", "2")
+	if alive, err := backend.IsAlive("broken"); core.ExitCode(err) != core.ExitEnv || alive {
+		t.Fatalf("exit 2 must be an environment error, got alive=%v code=%d err=%v", alive, core.ExitCode(err), err)
 	}
 }

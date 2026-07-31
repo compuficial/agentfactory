@@ -17,7 +17,6 @@ import (
 
 	"agentfactory.sh/af/internal/config"
 	"agentfactory.sh/af/internal/core"
-	"agentfactory.sh/af/internal/tmux"
 )
 
 // Deps is everything the dashboard needs from the CLI layer. NewRoot
@@ -26,7 +25,7 @@ import (
 type Deps struct {
 	Config  *config.Config
 	Store   *core.Store
-	Backend *tmux.Backend
+	Backend core.SessionBackend
 	Manager *core.Manager
 	NewRoot func() *cobra.Command
 }
@@ -59,9 +58,10 @@ const (
 // Confirm-prompt verbs. close and kill double as the prompt text;
 // rm-def is picker-only.
 const (
-	verbClose = "close"
-	verbKill  = "kill"
-	verbRmDef = "rm-def"
+	verbClose   = "close"
+	verbKill    = "kill"
+	verbRmDef   = "rm-def"
+	commandLogs = "logs"
 )
 
 // Dashboard tuning knobs.
@@ -88,6 +88,7 @@ type model struct {
 	cursor     int
 	selectedID string
 	preview    string
+	refreshSeq uint64
 
 	// open-from-definition picker
 	defs         []*core.AgentDefinition
@@ -124,12 +125,14 @@ func newModel(deps Deps) *model {
 type tickMsg time.Time
 
 type refreshMsg struct {
-	sessions  []*core.AgentSession
-	preview   string
-	previewOK bool // capture ran, even if the screen is blank
-	logs      string
-	logsOK    bool
-	err       error
+	seq        uint64
+	selectedID string
+	sessions   []*core.AgentSession
+	preview    string
+	previewOK  bool // capture ran, even if the screen is blank
+	logs       string
+	logsOK     bool
+	err        error
 }
 
 type defsMsg struct {
@@ -163,6 +166,8 @@ func (m *model) tickCmd() tea.Cmd {
 // refreshCmd does one reconciliation pass and gathers everything the
 // current view needs. Runs off the UI goroutine.
 func (m *model) refreshCmd() tea.Cmd {
+	m.refreshSeq++
+	seq := m.refreshSeq
 	deps := m.deps
 	selectedID := m.selectedID
 	previewW, previewH := m.previewArea()
@@ -171,7 +176,7 @@ func (m *model) refreshCmd() tea.Cmd {
 		wantLogs = m.logsSess.LogPath
 	}
 	return func() tea.Msg {
-		var msg refreshMsg
+		msg := refreshMsg{seq: seq, selectedID: selectedID}
 		if err := deps.Manager.Reconcile(); err != nil {
 			msg.err = err
 			return msg
@@ -186,7 +191,7 @@ func (m *model) refreshCmd() tea.Cmd {
 			if s.ID != selectedID {
 				continue
 			}
-			// Match the tmux window to the preview box so the
+			// Match the backend view to the preview box so the
 			// harness TUI renders for exactly this geometry — the
 			// preview then shows what attach would show.
 			if resized, err := deps.Backend.SyncSize(s.ID, previewW, previewH); err == nil && resized {
@@ -264,15 +269,20 @@ func (m *model) applyResize(msg tea.WindowSizeMsg) {
 }
 
 func (m *model) applyRefresh(msg refreshMsg) {
+	if msg.seq != m.refreshSeq {
+		return
+	}
 	if msg.err != nil {
 		m.setFlash("error: " + msg.err.Error())
 		return
 	}
 	m.sessions = msg.sessions
-	if msg.previewOK {
-		m.preview = msg.preview
-	}
 	m.pinSelection()
+	if msg.selectedID == m.selectedID && msg.previewOK {
+		m.preview = msg.preview
+	} else {
+		m.preview = ""
+	}
 	if m.mode == modeLogs && msg.logsOK {
 		atBottom := m.logsVP.AtBottom()
 		m.logsVP.SetContent(msg.logs)
@@ -303,6 +313,8 @@ func (m *model) pinSelection() {
 	}
 	if s := m.selected(); s != nil {
 		m.selectedID = s.ID
+	} else {
+		m.selectedID = ""
 	}
 }
 
@@ -491,21 +503,30 @@ func (m *model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		verb, sess := m.confirmVerb, m.confirmSess
+		m.confirmSess = nil
 		m.mode = modeList
 		if sess == nil {
 			return m, nil
 		}
+		sessionID := sess.ID
 		manager := m.deps.Manager
 		return m, func() tea.Msg {
-			var err error
+			current, err := manager.Store.GetSession(sessionID)
+			if err != nil {
+				return flashMsg{err: err}
+			}
+			if current.Status.Terminal() {
+				return flashMsg{text: fmt.Sprintf("session %s already %s", current.ID, current.Status)}
+			}
+			var operationErr error
 			done := "closed"
 			if verb == verbKill {
-				err = manager.Kill(sess)
+				operationErr = manager.Kill(current)
 				done = "killed"
 			} else {
-				err = manager.Close(sess, 0)
+				operationErr = manager.Close(current, 0)
 			}
-			return flashMsg{text: fmt.Sprintf("%s %s  %s", done, sess.ID, sess.Name), err: err}
+			return flashMsg{text: fmt.Sprintf("%s %s  %s", done, current.ID, current.Name), err: operationErr}
 		}
 	case "n", "N", keyEsc, "q":
 		if m.confirmVerb == verbRmDef { // cancel returns to the picker, not the list
@@ -635,6 +656,10 @@ func (m *model) execLineCmd(line string) tea.Cmd {
 		m.setFlash("already in the dashboard")
 		return nil
 	}
+	if err := validateCommandBarArgs(args); err != nil {
+		m.setFlash("error: " + err.Error())
+		return nil
+	}
 	newRoot := m.deps.NewRoot
 	return func() tea.Msg {
 		root := newRoot()
@@ -657,14 +682,35 @@ func (m *model) execLineCmd(line string) tea.Cmd {
 	}
 }
 
-// attachCmd releases the terminal, runs tmux attach, and re-initializes
-// the dashboard when the user detaches (§11 attach round-trip).
+func validateCommandBarArgs(args []string) error {
+	if len(args) == 0 {
+		return core.Errf(core.ExitUsage, "empty command")
+	}
+	switch args[0] {
+	case "status", "open", "send", "peek", "close", "kill", "rm", "prune",
+		"define", "defs", "rm-def", "signal", "doctor", "version":
+		return nil
+	case commandLogs:
+		for _, arg := range args[1:] {
+			if arg == "-f" || arg == "--follow" || strings.HasPrefix(arg, "-f=") || strings.HasPrefix(arg, "--follow=") {
+				return core.Errf(core.ExitUsage, "logs --follow cannot run in the dashboard command bar")
+			}
+		}
+		return nil
+	default:
+		return core.Errf(core.ExitUsage,
+			"%s cannot run in the dashboard command bar; run it from a terminal", args[0])
+	}
+}
+
+// attachCmd releases the terminal, connects to the session, and
+// re-initializes the dashboard when the user detaches.
 func (m *model) attachCmd(id string) tea.Cmd {
-	argv := m.deps.Backend.AttachArgs(id)
-	c := exec.CommandContext(context.Background(), argv[0], argv[1:]...)
-	// Strip $TMUX so attaching works when the dashboard itself runs
-	// inside the user's tmux (tmux refuses nested attach otherwise;
-	// detach from the nest with C-b twice then d).
-	c.Env = tmux.AttachEnv()
+	spec, err := m.deps.Backend.PrepareAttach(id)
+	if err != nil {
+		return func() tea.Msg { return attachDoneMsg{err} }
+	}
+	c := exec.CommandContext(context.Background(), spec.Path, spec.Argv[1:]...)
+	c.Env = spec.Env
 	return tea.ExecProcess(c, func(err error) tea.Msg { return attachDoneMsg{err} })
 }

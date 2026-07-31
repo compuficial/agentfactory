@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // WaitOutcome is the result of a Wait poll loop.
 type WaitOutcome int
@@ -13,7 +16,7 @@ const (
 )
 
 // waitMinInterval bounds poll frequency: each poll is a full
-// reconciliation pass (tmux queries + a stat per live session).
+// reconciliation pass (backend queries + a stat per live session).
 const waitMinInterval = 50 * time.Millisecond
 
 // Wait polls — one reconciliation pass per tick, exactly like the TUI —
@@ -22,6 +25,11 @@ const waitMinInterval = 50 * time.Millisecond
 // forever). Terminal statuses in targets count as reached, so waiting
 // for exited works naturally.
 func (m *Manager) Wait(id string, targets map[Status]bool, timeout, interval time.Duration) (*AgentSession, WaitOutcome, error) {
+	return m.WaitContext(context.Background(), id, targets, timeout, interval)
+}
+
+// WaitContext is Wait with cancellation for request-scoped callers.
+func (m *Manager) WaitContext(ctx context.Context, id string, targets map[Status]bool, timeout, interval time.Duration) (*AgentSession, WaitOutcome, error) {
 	if interval < waitMinInterval {
 		interval = waitMinInterval
 	}
@@ -30,6 +38,9 @@ func (m *Manager) Wait(id string, targets map[Status]bool, timeout, interval tim
 		deadline = time.Now().Add(timeout)
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		if err := m.Reconcile(); err != nil {
 			return nil, 0, err
 		}
@@ -45,6 +56,14 @@ func (m *Manager) Wait(id string, targets map[Status]bool, timeout, interval tim
 		case !deadline.IsZero() && time.Now().After(deadline):
 			return sess, WaitTimeout, nil
 		}
-		time.Sleep(interval)
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, 0, ctx.Err()
+		case <-timer.C:
+		}
 	}
 }

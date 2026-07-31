@@ -250,7 +250,7 @@ llama-8b   custom       -       <span class="p">working</span></pre>
     <div class="feat">
       <div class="panel card">
         <p class="h"><span class="dot m"></span>Know when you're needed</p>
-        <p>A bell, a notification, or an on-screen prompt flips a session to <span class="mono">awaiting-input</span> the instant it blocks. No polling, no per-agent setup.</p>
+        <p>Hooks and terminal signals report <span class="mono">awaiting-input</span> immediately; quiet-screen detection catches common prompts on the next reconciliation pass.</p>
       </div>
       <div class="panel card">
         <p class="h"><span class="dot g"></span>Agents that coordinate</p>
@@ -300,7 +300,7 @@ llama-8b   custom       -       <span class="p">working</span></pre>
         <button class="copy" id="copy2" aria-label="Copy install command">copy</button>
       </div>
     </div>
-    <p class="note">The script downloads the release binary for your platform, verifies its SHA-256 checksum, and drops <span class="mono">af</span> on your PATH. Read it first if you like: <a href="install.sh">install.sh</a>.</p>
+    <p class="note">The script downloads the release binary for your platform, verifies its SHA-256 checksum, and installs <span class="mono">af</span> to <span class="mono">~/.local/bin</span>. It warns if that directory is not on PATH. Read it first if you like: <a href="install.sh">install.sh</a>.</p>
 
     <div class="igrid">
       <div class="panel card">

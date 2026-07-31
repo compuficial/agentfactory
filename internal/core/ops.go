@@ -37,7 +37,7 @@ type Manager struct {
 
 func now() time.Time { return time.Now().UTC() }
 
-// Reconcile runs one reconciliation pass (§10.1).
+// Reconcile runs one reconciliation pass.
 func (m *Manager) Reconcile() error {
 	return Reconcile(m.Store, m.Backend, m.IdleThreshold, m.Detect, m.Signals, now())
 }
@@ -78,16 +78,17 @@ func ResolveWorkDir(dir string) (string, error) {
 }
 
 // LiveMatch returns the most-recently-active live (non-terminal,
-// non-service) session with the given harness and workdir, or nil —
-// resume-or-start's lookup for the frictionless launcher.
-func (m *Manager) LiveMatch(harness, workDir string) (*AgentSession, error) {
+// non-service) session with the given harness, workdir, and optional
+// definition, or nil — resume-or-start's lookup for the launcher.
+func (m *Manager) LiveMatch(harness, workDir, definition string) (*AgentSession, error) {
 	sessions, err := m.Store.ListSessions(false)
 	if err != nil {
 		return nil, err
 	}
 	var best *AgentSession
 	for _, s := range sessions {
-		if s.Service || s.Harness != harness || s.WorkDir != workDir {
+		if s.Service || s.Harness != harness || s.WorkDir != workDir ||
+			(definition != "" && s.Definition != definition) {
 			continue
 		}
 		if best == nil || s.LastActive.After(best.LastActive) {
@@ -97,8 +98,8 @@ func (m *Manager) LiveMatch(harness, workDir string) (*AgentSession, error) {
 	return best, nil
 }
 
-// Open resolves definition + overrides, validates, and starts a session
-// (§8.2 af open, Appendix A lifecycle).
+// Open resolves definition + overrides, validates, and starts a session.
+// The launch order preserves rollback across process and persistence setup.
 func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
 	def, err := m.buildDefinition(req)
 	if err != nil {
@@ -133,10 +134,21 @@ func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
 	}
 
 	logDir := filepath.Join(m.DataDir, "logs")
-	if err := os.MkdirAll(logDir, dirPerm); err != nil {
-		return nil, Errf(ExitRuntime, "create log dir: %v", err)
+	if mkdirErr := os.MkdirAll(logDir, dirPerm); mkdirErr != nil {
+		return nil, Errf(ExitRuntime, "create log dir: %v", mkdirErr)
 	}
 	logPath := filepath.Join(logDir, id+".log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
+	if err != nil {
+		return nil, Errf(ExitRuntime, "create log file: %v", err)
+	}
+	if err := logFile.Chmod(filePerm); err != nil {
+		_ = logFile.Close()
+		return nil, Errf(ExitRuntime, "secure log file: %v", err)
+	}
+	if err := logFile.Close(); err != nil {
+		return nil, Errf(ExitRuntime, "close log file: %v", err)
+	}
 
 	env := MergeEnv(harness.Env, def.Env, req.Env)
 	env[EnvSessionID] = id
@@ -168,6 +180,7 @@ func (m *Manager) Open(req OpenRequest) (*AgentSession, error) {
 		return nil, err
 	}
 	if err := m.Store.UpdateSession(sess); err != nil {
+		_ = m.Backend.Kill(sess.ID)
 		return nil, err
 	}
 	return sess, nil
@@ -306,7 +319,7 @@ func (m *Manager) ResolveOne(ref string) (*AgentSession, error) {
 }
 
 // Kill immediately SIGKILLs the whole process group, harvests the exit,
-// and destroys the tmux session.
+// and destroys the backend session.
 func (m *Manager) Kill(sess *AgentSession) error {
 	if sess.Status.Terminal() {
 		return nil
@@ -325,7 +338,7 @@ func signalGroup(sess *AgentSession, sig syscall.Signal) {
 
 // Close gracefully stops a session: harness QuitKeys (skipped for
 // service sessions) -> wait 2s -> SIGTERM to -PGID -> wait timeout ->
-// SIGKILL to -PGID -> harvest (§8.2 af close).
+// SIGKILL to -PGID -> harvest.
 func (m *Manager) Close(sess *AgentSession, timeout time.Duration) error {
 	if sess.Status.Terminal() {
 		return nil
@@ -377,16 +390,19 @@ func (m *Manager) Remove(sess *AgentSession) error {
 	if !sess.Status.Terminal() {
 		return Errf(ExitRuntime, "session %s is %s; close or kill it before removing", sess.ID, sess.Status)
 	}
+	if err := m.Store.DeleteSession(sess.ID); err != nil {
+		return err
+	}
 	if sess.LogPath != "" {
 		_ = os.Remove(sess.LogPath)
 	}
-	return m.Store.DeleteSession(sess.ID)
+	return nil
 }
 
-// Signal records a harness-reported state (T2 adapter path, §7.1 rule
-// 3): awaiting-input when blocked on the user, done when the task is
-// complete. The next observed meaningful output clears it back to
-// working. Signal-set state always outranks T1.5 detection.
+// Signal records a harness-reported state through the T2 adapter path:
+// awaiting-input when blocked on the user, or done when the task is complete.
+// The next observed meaningful output clears it back to working. Signal-set
+// state always outranks T1.5 detection.
 func (m *Manager) Signal(sess *AgentSession, status Status) error {
 	if !status.Sticky() {
 		return Errf(ExitUsage, "unknown state %q (valid: %s, %s)", status, StatusAwaitingInput, StatusDone)
@@ -394,9 +410,26 @@ func (m *Manager) Signal(sess *AgentSession, status Status) error {
 	if sess.Status.Terminal() {
 		return nil
 	}
+	logOffset := sess.LogOffset
+	if info, err := os.Stat(sess.LogPath); err == nil && info.Size() > logOffset {
+		logOffset = info.Size()
+	}
+	updated, err := m.Store.UpdateSignal(sess.ID, status, logOffset)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		latest, err := m.Store.GetSession(sess.ID)
+		if err != nil {
+			return err
+		}
+		*sess = *latest
+		return nil
+	}
 	sess.Status = status
 	sess.StatusOrigin = OriginSignal
-	return m.Store.UpdateSession(sess)
+	sess.LogOffset = logOffset
+	return nil
 }
 
 // Send injects input into a live session without attaching.
@@ -408,7 +441,7 @@ func (m *Manager) Send(sess *AgentSession, text string, enter bool) error {
 }
 
 // harvest waits briefly for the pane to report death, records the exit
-// code (or failure), and destroys the tmux session.
+// code (or failure), and destroys the backend session.
 func (m *Manager) harvest(sess *AgentSession) error {
 	deadline := time.Now().Add(harvestTimeout)
 	for {

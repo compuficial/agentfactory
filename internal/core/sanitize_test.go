@@ -1,6 +1,8 @@
 package core
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -31,5 +33,23 @@ func TestSanitizeTerminal(t *testing.T) {
 	soup := "\x1b[3;9H\x1b[K\x1b[2Jgarble\x1b[?25l\x1b[0m\n"
 	if got := SanitizeTerminal([]byte(soup)); strings.ContainsRune(got, 0x1b) {
 		t.Errorf("escape byte survived: %q", got)
+	}
+}
+
+func TestReadLogBytesBoundsTailRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.log")
+	if err := os.WriteFile(path, []byte("prefix-tail"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadLogBytes(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "tail" {
+		t.Fatalf("bounded log read = %q, want tail", got)
+	}
+	got, err = ReadLogBytes(filepath.Join(t.TempDir(), "missing.log"), 4)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("missing log = %q, %v; want empty", got, err)
 	}
 }

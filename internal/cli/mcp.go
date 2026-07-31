@@ -71,14 +71,14 @@ type mcpSignalArgs struct {
 // appTool adapts a handler to the lifecycle every tool shares: a fresh
 // App per call, closed when the call ends — daemonless, so nothing
 // outlives one call and config/DB state is never held stale.
-func appTool[In any](app func() (*App, error), fn func(*App, In) (*mcp.CallToolResult, any, error)) mcp.ToolHandlerFor[In, any] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+func appTool[In any](app func() (*App, error), fn func(context.Context, *App, In) (*mcp.CallToolResult, any, error)) mcp.ToolHandlerFor[In, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		a, err := app()
 		if err != nil {
 			return nil, nil, err
 		}
 		defer a.Close()
-		return fn(a, in)
+		return fn(ctx, a, in)
 	}
 }
 
@@ -107,7 +107,7 @@ func addStatusTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_status",
 		Description: "List af sessions with status. Call this first to discover peers.",
-	}, appTool(app, func(a *App, args mcpStatusArgs) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(_ context.Context, a *App, args mcpStatusArgs) (*mcp.CallToolResult, any, error) {
 		sessions, err := a.Store.ListSessions(args.All)
 		if err != nil {
 			return nil, nil, err
@@ -124,7 +124,7 @@ func addPeekTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_peek",
 		Description: "Read a session's current rendered screen. Use after af_wait to see what a peer produced or is asking.",
-	}, appTool(app, func(a *App, args mcpPeekArgs) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(_ context.Context, a *App, args mcpPeekArgs) (*mcp.CallToolResult, any, error) {
 		sess, err := a.Manager.ResolveOne(args.Session)
 		if err != nil {
 			return nil, nil, err
@@ -141,14 +141,14 @@ func addLogsTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_logs",
 		Description: "Read a session's captured output history (scrollback survives detach).",
-	}, appTool(app, func(a *App, args mcpLogsArgs) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(_ context.Context, a *App, args mcpLogsArgs) (*mcp.CallToolResult, any, error) {
 		sess, err := a.Manager.ResolveOne(args.Session)
 		if err != nil {
 			return nil, nil, err
 		}
-		cleaned, err := core.ReadLogTail(sess.LogPath, 0)
+		cleaned, err := core.ReadLogTail(sess.LogPath, logReadBytes)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, core.Errf(core.ExitRuntime, "read log: %v", err)
 		}
 		lines := args.Lines
 		if lines <= 0 {
@@ -162,7 +162,7 @@ func addSendTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_send",
 		Description: "Inject input into a session without attaching — how you give a peer its task or answer its prompt.",
-	}, appTool(app, func(a *App, args mcpSendArgs) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(_ context.Context, a *App, args mcpSendArgs) (*mcp.CallToolResult, any, error) {
 		sess, err := a.Manager.ResolveOne(args.Session)
 		if err != nil {
 			return nil, nil, err
@@ -178,7 +178,7 @@ func addOpenTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_open",
 		Description: "Start a new agent or service session from a definition (af_defs) or ad-hoc flags. Returns the new session object.",
-	}, appTool(app, func(a *App, args mcpOpenArgs) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(_ context.Context, a *App, args mcpOpenArgs) (*mcp.CallToolResult, any, error) {
 		sess, err := a.Manager.Open(core.OpenRequest{
 			Definition: args.Definition,
 			Name:       args.Name,
@@ -204,7 +204,7 @@ func addWaitTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_wait",
 		Description: "Block until a session reaches a target status — the coordination primitive. Default targets mean \"the peer stopped working\".",
-	}, appTool(app, func(a *App, args mcpWaitArgs) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(ctx context.Context, a *App, args mcpWaitArgs) (*mcp.CallToolResult, any, error) {
 		sess, err := a.Manager.ResolveOne(args.Session)
 		if err != nil {
 			return nil, nil, err
@@ -214,7 +214,7 @@ func addWaitTool(server *mcp.Server, app func() (*App, error)) {
 			forCSV = "idle,awaiting-input,done"
 		}
 		targets := map[core.Status]bool{}
-		for _, name := range strings.Split(forCSV, ",") {
+		for name := range strings.SplitSeq(forCSV, ",") {
 			status, parseErr := core.ParseStatus(strings.TrimSpace(name))
 			if parseErr != nil {
 				return nil, nil, parseErr
@@ -225,7 +225,7 @@ func addWaitTool(server *mcp.Server, app func() (*App, error)) {
 		if args.TimeoutSeconds > 0 {
 			timeout = min(time.Duration(args.TimeoutSeconds)*time.Second, mcpWaitMax)
 		}
-		sess, outcome, err := a.Manager.Wait(sess.ID, targets, timeout, time.Second)
+		sess, outcome, err := a.Manager.WaitContext(ctx, sess.ID, targets, timeout, time.Second)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -240,7 +240,7 @@ func addCloseTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_close",
 		Description: "Gracefully stop a session you opened (quit keys, then escalating signals).",
-	}, appTool(app, func(a *App, args mcpSessionArgs) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(_ context.Context, a *App, args mcpSessionArgs) (*mcp.CallToolResult, any, error) {
 		sess, err := a.Manager.ResolveOne(args.Session)
 		if err != nil {
 			return nil, nil, err
@@ -256,7 +256,7 @@ func addDefsTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_defs",
 		Description: "List reusable agent definitions available to af_open.",
-	}, appTool(app, func(a *App, _ struct{}) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(_ context.Context, a *App, _ struct{}) (*mcp.CallToolResult, any, error) {
 		defs, err := a.Store.ListDefinitions()
 		if err != nil {
 			return nil, nil, err
@@ -273,7 +273,7 @@ func addSignalTool(server *mcp.Server, app func() (*App, error)) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "af_signal",
 		Description: "Report a harness state: call with state \"done\" when your task is complete so peers waiting on you unblock (session defaults to yourself).",
-	}, appTool(app, func(a *App, args mcpSignalArgs) (*mcp.CallToolResult, any, error) {
+	}, appTool(app, func(_ context.Context, a *App, args mcpSignalArgs) (*mcp.CallToolResult, any, error) {
 		ref := args.Session
 		if ref == "" {
 			ref = os.Getenv("AF_SESSION_ID")

@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +21,32 @@ type mockBackend struct {
 	captured string
 }
 
+type callbackBackend struct {
+	*mockBackend
+	onIsAlive func()
+}
+
+type closeStoreBackend struct {
+	*mockBackend
+	closeStore func()
+}
+
+func (b *closeStoreBackend) Create(sess *AgentSession) error {
+	if err := b.mockBackend.Create(sess); err != nil {
+		return err
+	}
+	b.closeStore()
+	return nil
+}
+
+func (b *callbackBackend) IsAlive(id string) (bool, error) {
+	if callback := b.onIsAlive; callback != nil {
+		b.onIsAlive = nil
+		callback()
+	}
+	return b.mockBackend.IsAlive(id)
+}
+
 func newMockBackend() *mockBackend {
 	return &mockBackend{alive: map[string]bool{}, dead: map[string]int{}}
 }
@@ -30,6 +58,16 @@ func (m *mockBackend) Create(sess *AgentSession) error {
 	return nil
 }
 func (m *mockBackend) Attach(id string) error { return nil }
+func (m *mockBackend) PrepareAttach(id string) (AttachSpec, error) {
+	return AttachSpec{}, nil
+}
+
+func (m *mockBackend) SyncSize(id string, width, height int) (bool, error) {
+	return false, nil
+}
+
+func (m *mockBackend) SetSendDelay(delay time.Duration) {}
+
 func (m *mockBackend) CapturePane(id string, lines int) (string, error) {
 	return m.captured, nil
 }
@@ -89,7 +127,7 @@ func TestRenderCommand(t *testing.T) {
 			t.Fatalf("%s: got %q, %v", harness, got, err)
 		}
 		got, err = RenderCommand(h, AgentDefinition{Model: "m1"}, "")
-		if err != nil || got != binary+" --model m1" {
+		if err != nil || got != binary+" --model 'm1'" {
 			t.Fatalf("%s with model: got %q, %v", harness, got, err)
 		}
 	}
@@ -107,8 +145,170 @@ func TestRenderCommand(t *testing.T) {
 	// With a files dir, claude-code auto-wires its hooks settings file.
 	cc, _ := set.Resolve("claude-code")
 	got, err = RenderCommand(cc, AgentDefinition{Model: "opus"}, "/files")
-	if err != nil || got != "claude --settings /files/settings.json --model opus" {
+	if err != nil || got != "claude --settings '/files/settings.json' --model 'opus'" {
 		t.Fatalf("claude-code with files dir: got %q, %v", got, err)
+	}
+}
+
+func TestRenderCommandQuotesBuiltinShellValues(t *testing.T) {
+	set := NewHarnessSet(nil)
+
+	codex, err := set.Resolve(HarnessCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := RenderCommand(codex, AgentDefinition{Model: `fast; touch "$HOME/pwned"`}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `codex --model 'fast; touch "$HOME/pwned"'`; got != want {
+		t.Fatalf("model must remain one shell argument: got %q, want %q", got, want)
+	}
+
+	claude, err := set.Resolve(HarnessClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = RenderCommand(claude, AgentDefinition{}, `/tmp/wire dir; touch "$HOME/pwned"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `claude --settings '/tmp/wire dir; touch "$HOME/pwned"/settings.json'`; got != want {
+		t.Fatalf("files path must remain one shell argument: got %q, want %q", got, want)
+	}
+}
+
+func TestMaterializeFilesRejectsEscapingHarnessName(t *testing.T) {
+	dataDir := t.TempDir()
+	harness := Harness{
+		Name:        "../outside",
+		CommandTmpl: "agent",
+		Files:       map[string]string{"settings.json": "{}\n"},
+	}
+
+	if _, err := MaterializeFiles(harness, dataDir); ExitCode(err) != ExitRuntime {
+		t.Fatalf("escaping harness name must fail with exit 1, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "outside", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("escaping harness name wrote outside harnesses dir: %v", err)
+	}
+}
+
+func TestOpenStoreRestrictsStatePermissions(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("data dir permissions = %04o, want 0700", got)
+	}
+	info, err = os.Stat(filepath.Join(dataDir, "agentfactory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("database permissions = %04o, want 0600", got)
+	}
+}
+
+func TestOpenStoreHandlesURLMetacharactersInPath(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "state?profile#one")
+	store, err := OpenStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "agentfactory.db")); err != nil {
+		t.Fatalf("database was not created at the requested path: %v", err)
+	}
+}
+
+func TestUpdateSessionRejectsMissingRow(t *testing.T) {
+	store := testStore(t)
+	err := store.UpdateSession(&AgentSession{ID: "missing", StartedAt: time.Now(), LastActive: time.Now()})
+	if ExitCode(err) != ExitNotFound {
+		t.Fatalf("missing session update exit code = %d, want %d: %v", ExitCode(err), ExitNotFound, err)
+	}
+}
+
+func TestOpenCreatesPrivateLogFile(t *testing.T) {
+	store, backend := testStore(t), newMockBackend()
+	dataDir := t.TempDir()
+	manager := &Manager{
+		Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
+		DataDir: dataDir, IdleThreshold: 5 * time.Second,
+	}
+
+	sess, err := manager.Open(OpenRequest{Cmd: "sleep 600", WorkDir: "/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(sess.LogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("log permissions = %04o, want 0600", got)
+	}
+}
+
+func TestOpenCleansBackendWhenFinalStoreWriteFails(t *testing.T) {
+	store := testStore(t)
+	baseBackend := newMockBackend()
+	backend := &closeStoreBackend{
+		mockBackend: baseBackend,
+		closeStore: func() {
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	manager := &Manager{
+		Store: store, Backend: backend, Harnesses: NewHarnessSet(nil),
+		DataDir: t.TempDir(), IdleThreshold: 5 * time.Second,
+	}
+
+	sess, err := manager.Open(OpenRequest{Cmd: "sleep 600", WorkDir: "/"})
+	if err == nil {
+		t.Fatal("Open must report the final store write failure")
+	}
+	if sess != nil {
+		t.Fatalf("failed Open returned a session: %+v", sess)
+	}
+	if len(baseBackend.killed) != 1 {
+		t.Fatalf("failed Open cleanup kills = %v, want one", baseBackend.killed)
+	}
+}
+
+func TestRemovePreservesLogWhenRowDeleteFails(t *testing.T) {
+	store := testStore(t)
+	logPath := filepath.Join(t.TempDir(), "session.log")
+	if err := os.WriteFile(logPath, []byte("history\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sess := seedSession(t, store, "remove001", StatusExited, time.Now().UTC(), logPath)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := &Manager{Store: store}
+	if err := manager.Remove(sess); err == nil {
+		t.Fatal("Remove must report the row deletion failure")
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("failed row deletion must preserve the session log: %v", err)
 	}
 }
 
@@ -144,7 +344,7 @@ func TestOpenMaterializesHarnessFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	ccDir := filepath.Join(dd, "harnesses", "claude-code")
-	if !strings.Contains(cc.Command, "--settings "+ccDir+"/settings.json") {
+	if !strings.Contains(cc.Command, "--settings '"+ccDir+"/settings.json'") {
 		t.Fatalf("claude-code command %q must load the materialized settings", cc.Command)
 	}
 	raw, err = os.ReadFile(filepath.Join(ccDir, "settings.json"))
@@ -243,12 +443,53 @@ func TestScanStreamEvents(t *testing.T) {
 	}
 }
 
+func TestReconcileRetainsIncompleteOSCForNextDelta(t *testing.T) {
+	store, backend := testStore(t), newMockBackend()
+	logPath := filepath.Join(t.TempDir(), "split-osc.log")
+	first := "\x1b]9;needs"
+	if err := os.WriteFile(logPath, []byte(first), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sess := seedSession(t, store, "osc001", StatusIdle, time.Now().UTC().Add(-time.Hour), logPath)
+	backend.alive[sess.ID] = true
+	signals := CompileSignals(nil, func(message string) { t.Fatalf("unexpected warning: %s", message) })
+
+	if err := Reconcile(store, backend, 5*time.Second, nil, signals, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	partial, loadErr := store.GetSession(sess.ID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if partial.LogOffset != 0 {
+		t.Fatalf("incomplete OSC advanced offset to %d, want 0", partial.LogOffset)
+	}
+
+	appendFile(t, logPath, " permission\x07")
+	if reconcileErr := Reconcile(store, backend, 5*time.Second, nil, signals, time.Now().UTC()); reconcileErr != nil {
+		t.Fatal(reconcileErr)
+	}
+	complete, err := store.GetSession(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete.Status != StatusAwaitingInput || complete.StatusOrigin != OriginTerm {
+		t.Fatalf("split OSC notification was lost: %s/%q", complete.Status, complete.StatusOrigin)
+	}
+	if complete.LogOffset != int64(len(first+" permission\x07")) {
+		t.Fatalf("complete OSC offset = %d, want EOF", complete.LogOffset)
+	}
+}
+
 func TestReconcileTermSignals(t *testing.T) {
 	sigs := CompileSignals(nil, func(w string) { t.Fatalf("unexpected warning: %s", w) })
 	newSess := func(t *testing.T) (*Store, *mockBackend, *AgentSession, string) {
+		t.Helper()
 		store, backend := testStore(t), newMockBackend()
 		logPath := filepath.Join(t.TempDir(), "s.log")
-		os.WriteFile(logPath, []byte{}, 0o644)
+		if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
 		// LastActive = now: the session is NOT quiet, proving signals
 		// bypass the idle-threshold gate.
 		sess := seedSession(t, store, "trm001", StatusWorking, time.Now().UTC(), logPath)
@@ -368,12 +609,12 @@ func TestMergeEnvPrecedence(t *testing.T) {
 	}
 }
 
-// --- reconciliation transitions (§7.1 / §10.1) ---
+// --- reconciliation transitions ---
 
 func TestReconcileMissingSessionFails(t *testing.T) {
 	store, backend := testStore(t), newMockBackend()
 	seedSession(t, store, "aaaaaa", StatusWorking, time.Now().UTC(), "/nonexistent")
-	// backend.alive["aaaaaa"] is false: tmux session missing.
+	// backend.alive["aaaaaa"] is false: runtime session missing.
 	if err := Reconcile(store, backend, 5*time.Second, nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +644,9 @@ func TestReconcileDeadPaneExits(t *testing.T) {
 func TestReconcileLogGrowthActivates(t *testing.T) {
 	store, backend := testStore(t), newMockBackend()
 	logPath := filepath.Join(t.TempDir(), "s.log")
-	os.WriteFile(logPath, []byte("output!"), 0o644)
+	if err := os.WriteFile(logPath, []byte("output!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	old := time.Now().UTC().Add(-time.Hour)
 	sess := seedSession(t, store, "cccccc", StatusAwaitingInput, old, logPath)
 	backend.alive[sess.ID] = true
@@ -449,7 +692,9 @@ func TestMeaningfulText(t *testing.T) {
 func TestReconcileIgnoresAnimationOnlyGrowth(t *testing.T) {
 	store, backend := testStore(t), newMockBackend()
 	logPath := filepath.Join(t.TempDir(), "s.log")
-	os.WriteFile(logPath, []byte("grok banner\n"), 0o644)
+	if err := os.WriteFile(logPath, []byte("grok banner\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// Session already saw the banner (offset at EOF), then went quiet
 	// except for the idle animation.
 	sess := seedSession(t, store, "anim01", StatusWorking, time.Now().UTC().Add(-time.Hour), logPath)
@@ -534,7 +779,7 @@ func TestReconcileIdleThreshold(t *testing.T) {
 	if got, _ := store.GetSession(stale.ID); got.Status != StatusIdle {
 		t.Fatalf("stale session should be idle, got %s", got.Status)
 	}
-	// §7.1 rule 1: starting -> working only on first observed growth, so
+	// Starting -> working only on first observed growth, so
 	// a quiet fresh session stays starting within the threshold...
 	if got, _ := store.GetSession(fresh.ID); got.Status != StatusStarting {
 		t.Fatalf("quiet fresh session should stay starting, got %s", got.Status)
@@ -551,7 +796,9 @@ func TestReconcileIdleThreshold(t *testing.T) {
 func TestReconcileStartingToActiveOnGrowth(t *testing.T) {
 	store, backend := testStore(t), newMockBackend()
 	logPath := filepath.Join(t.TempDir(), "s.log")
-	os.WriteFile(logPath, []byte{}, 0o644)
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	sess := seedSession(t, store, "gggggg", StatusStarting, time.Now().UTC(), logPath)
 	backend.alive[sess.ID] = true
 
@@ -644,7 +891,9 @@ func TestSignalStates(t *testing.T) {
 func TestReconcileDonePersistsAndClears(t *testing.T) {
 	store, backend := testStore(t), newMockBackend()
 	logPath := filepath.Join(t.TempDir(), "s.log")
-	os.WriteFile(logPath, []byte{}, 0o644)
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	sess := seedSession(t, store, "don001", StatusIdle, time.Now().UTC().Add(-time.Hour), logPath)
 	backend.alive[sess.ID] = true
 	m := &Manager{Store: store, Backend: backend}
@@ -673,6 +922,7 @@ func TestReconcileDonePersistsAndClears(t *testing.T) {
 
 func TestWaitOutcomes(t *testing.T) {
 	newManager := func(t *testing.T) (*Manager, *mockBackend, *AgentSession) {
+		t.Helper()
 		store, backend := testStore(t), newMockBackend()
 		sess := seedSession(t, store, "wai001", StatusWorking, time.Now().UTC().Add(-time.Hour), "/nonexistent")
 		backend.alive[sess.ID] = true
@@ -707,6 +957,24 @@ func TestWaitOutcomes(t *testing.T) {
 	_, outcome, err = m.Wait(sess.ID, map[Status]bool{StatusDone: true}, 150*time.Millisecond, time.Millisecond)
 	if err != nil || outcome != WaitTimeout {
 		t.Fatalf("want timeout, got %v/%v", outcome, err)
+	}
+}
+
+func TestWaitContextStopsWhenCanceled(t *testing.T) {
+	store, backend := testStore(t), newMockBackend()
+	sess := seedSession(t, store, "cancel001", StatusWorking, time.Now().UTC(), filepath.Join(t.TempDir(), "session.log"))
+	backend.alive[sess.ID] = true
+	manager := &Manager{Store: store, Backend: backend, IdleThreshold: time.Hour}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	started := time.Now()
+	_, _, err := manager.WaitContext(ctx, sess.ID, map[Status]bool{StatusDone: true}, time.Minute, time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled wait error = %v, want context canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("canceled wait returned after %s", elapsed)
 	}
 }
 
@@ -892,11 +1160,92 @@ func TestSeedFromSession(t *testing.T) {
 		t.Fatalf("non-custom harness must not capture a command, got %q", def.Config["cmd"])
 	}
 
+	// Capturing into an existing definition is an exact snapshot, not a
+	// merge that leaves stale launch settings behind.
+	reused := &AgentDefinition{
+		Name:   "reused",
+		Env:    map[string]string{"STALE": "value"},
+		Config: map[string]string{"cmd": "old", "stale": "value"},
+	}
+	reused.SeedFromSession(sess)
+	if len(reused.Env) != 1 || reused.Env["FOO"] != "bar" {
+		t.Fatalf("captured env retained stale values: %v", reused.Env)
+	}
+	if len(reused.Config) != 0 {
+		t.Fatalf("non-custom capture retained stale config: %v", reused.Config)
+	}
+
 	// A custom session captures its exact command as config cmd.
-	cd := &AgentDefinition{Name: "c"}
+	cd := &AgentDefinition{Name: "c", Config: map[string]string{"stale": "value"}}
 	cd.SeedFromSession(&AgentSession{Harness: "custom", Command: "sleep 300"})
-	if cd.Harness != "custom" || cd.Config["cmd"] != "sleep 300" {
+	if cd.Harness != "custom" || len(cd.Config) != 1 || cd.Config["cmd"] != "sleep 300" {
 		t.Fatalf("custom command not captured: %+v", cd)
+	}
+}
+
+func TestSignalWinsRaceWithReconciliation(t *testing.T) {
+	store := testStore(t)
+	logPath := filepath.Join(t.TempDir(), "session.log")
+	logData := []byte("work emitted before signal\n")
+	if err := os.WriteFile(logPath, logData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sess := seedSession(t, store, "race001", StatusIdle, time.Now().UTC().Add(-time.Hour), logPath)
+	baseBackend := newMockBackend()
+	baseBackend.alive[sess.ID] = true
+	backend := &callbackBackend{mockBackend: baseBackend}
+	manager := &Manager{Store: store, Backend: backend, IdleThreshold: 5 * time.Second}
+	backend.onIsAlive = func() {
+		fresh, err := store.GetSession(sess.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Signal(fresh, StatusDone); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := manager.Reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetSession(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusDone || got.StatusOrigin != OriginSignal {
+		t.Fatalf("reconciliation overwrote explicit signal: %s/%q", got.Status, got.StatusOrigin)
+	}
+	if got.LogOffset != int64(len(logData)) {
+		t.Fatalf("signal log offset = %d, want %d", got.LogOffset, len(logData))
+	}
+}
+
+func TestSignalDoesNotReviveConcurrentTerminalSession(t *testing.T) {
+	store := testStore(t)
+	sess := seedSession(t, store, "race002", StatusWorking, time.Now().UTC(), filepath.Join(t.TempDir(), "session.log"))
+	stale, staleErr := store.GetSession(sess.ID)
+	if staleErr != nil {
+		t.Fatal(staleErr)
+	}
+	terminal, terminalErr := store.GetSession(sess.ID)
+	if terminalErr != nil {
+		t.Fatal(terminalErr)
+	}
+	terminal.markExited(0, time.Now().UTC())
+	if updateErr := store.UpdateSession(terminal); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+
+	manager := &Manager{Store: store}
+	if signalErr := manager.Signal(stale, StatusAwaitingInput); signalErr != nil {
+		t.Fatal(signalErr)
+	}
+	got, err := store.GetSession(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusExited {
+		t.Fatalf("stale signal revived terminal session as %s", got.Status)
 	}
 }
 
@@ -944,14 +1293,44 @@ func TestLiveMatch(t *testing.T) {
 	seed("svc", "claude-code", "/repo", StatusWorking, now, true)      // service, ignored
 	seed("dead", "claude-code", "/repo", StatusExited, now, false)     // terminal, excluded by ListSessions
 
-	m2, err := m.LiveMatch("claude-code", "/repo")
+	m2, err := m.LiveMatch("claude-code", "/repo", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if m2 == nil || m2.ID != "new" {
 		t.Fatalf("want most-recent live match 'new', got %v", m2)
 	}
-	if m3, _ := m.LiveMatch("grok", "/repo"); m3 != nil {
+	if m3, _ := m.LiveMatch("grok", "/repo", ""); m3 != nil {
 		t.Fatalf("no grok session; want nil, got %v", m3)
+	}
+}
+
+func TestLiveMatchRespectsExplicitDefinition(t *testing.T) {
+	store := testStore(t)
+	manager := &Manager{Store: store}
+	now := time.Now().UTC()
+	for _, sess := range []*AgentSession{
+		{
+			ID: "alpha001", Name: "alpha", Definition: "alpha", Harness: "claude-code",
+			Command: "claude", WorkDir: "/repo", Status: StatusIdle,
+			StartedAt: now.Add(-time.Minute), LastActive: now.Add(-time.Minute), LogPath: "/alpha.log",
+		},
+		{
+			ID: "beta001", Name: "beta", Definition: "beta", Harness: "claude-code",
+			Command: "claude", WorkDir: "/repo", Status: StatusWorking,
+			StartedAt: now, LastActive: now, LogPath: "/beta.log",
+		},
+	} {
+		if err := store.InsertSession(sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := manager.LiveMatch("claude-code", "/repo", "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Definition != "alpha" {
+		t.Fatalf("explicit alpha launch resumed %+v", got)
 	}
 }

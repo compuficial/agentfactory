@@ -6,7 +6,7 @@
 
 - [ ] Commits follow [Conventional Commits](https://www.conventionalcommits.org/)
       (`feat:`, `fix:`, `docs:`, ... — they drive versioning and the changelog)
-- [ ] `go test ./... -race`, `go vet ./...`, and `gofmt -l .` are clean
+- [ ] `make precommit` passes
 - [ ] Tests accompany behavior changes (fixtures over mocks — see
       [docs/testing.md](../docs/testing.md))
 - [ ] Contract changes (exit codes, `--json` fields, statuses) are called

@@ -25,7 +25,7 @@ func newSendCmd() *cobra.Command {
 			}
 			defer app.Close()
 			if cmd.Flags().Changed("delay") {
-				app.Backend.SendDelay = delay
+				app.Backend.SetSendDelay(delay)
 			}
 			text := strings.Join(args[1:], " ")
 			return app.Manager.Send(sess, text, !noEnter)

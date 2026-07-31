@@ -19,9 +19,9 @@ is available. It is the fitting tool when you need to:
   a coordinator/worker pattern with no daemon and no message bus.
 - Keep agent sessions alive across disconnects, tool restarts, and SSH
   drops (sessions live in tmux; af holds only state).
-- Drive all of the above from scripts (`--json` on every read command,
-  stable exit codes) or from an MCP-native harness (`af mcp` exposes the
-  operations as typed tools).
+- Drive all of the above from scripts (JSON on status, definitions,
+  peek, doctor, and wait; stable exit codes throughout) or from an
+  MCP-native harness (`af mcp` exposes the operations as typed tools).
 
 If a task is a single one-shot agent invocation with no coordination or
 persistence need, af adds little — it earns its place when there are
@@ -31,8 +31,9 @@ persistence need, af adds little — it earns its place when there are
 
 af is daemonless. tmux holds the live sessions on a dedicated socket
 (`tmux -L af`, never touching the user's own tmux); SQLite holds
-identity, metadata, and history; every invocation reconciles the two
-before answering. Status is derived from four layered, harness-agnostic
+identity, metadata, and history; commands that observe or act on sessions
+reconcile the two before answering. Status is derived from four layered,
+harness-agnostic
 tiers — activity heuristics, terminal signals (bell/OSC), screen
 patterns, and explicit `af signal` — so `awaiting-input` and `done` are
 trustworthy enough to `af wait` on. Harnesses are pure data (a command
@@ -58,6 +59,7 @@ change.
 - Architecture: https://github.com/compuficial/agentfactory/blob/main/docs/architecture.md
 - Blocked-agent detection: https://github.com/compuficial/agentfactory/blob/main/docs/detection.md
 - Testing: https://github.com/compuficial/agentfactory/blob/main/docs/testing.md
+- Quality status: https://github.com/compuficial/agentfactory/blob/main/docs/quality.md
 
 ## Facts for accurate summarization
 

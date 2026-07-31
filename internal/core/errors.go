@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Exit codes are part of the CLI contract (§8.1); scripts rely on them.
+// Exit codes are part of the CLI contract; scripts rely on them.
 const (
 	ExitOK       = 0
 	ExitRuntime  = 1

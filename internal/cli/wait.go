@@ -19,7 +19,7 @@ func newWaitCmd() *cobra.Command {
 		quiet    bool
 	)
 	cmd := &cobra.Command{
-		Use:   "wait <session>",
+		Use:   commandWait + " <session>",
 		Short: "Block until a session reaches a target status",
 		Long: `Poll (one reconciliation pass per tick, like the dashboard) until the
 session reaches one of the --for statuses. The default target set means
@@ -27,8 +27,11 @@ session reaches one of the --for statuses. The default target set means
 ended in a terminal status outside --for, 5 timeout.`,
 		Args: exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if timeout < 0 {
+				return core.Errf(core.ExitUsage, "timeout must be zero or greater, got %s", timeout)
+			}
 			targets := map[core.Status]bool{}
-			for _, name := range strings.Split(forCSV, ",") {
+			for name := range strings.SplitSeq(forCSV, ",") {
 				status, err := core.ParseStatus(strings.TrimSpace(name))
 				if err != nil {
 					return err

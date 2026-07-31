@@ -19,20 +19,24 @@ func wireCompletions(root *cobra.Command) {
 	noComp := cobra.NoFileCompletions
 
 	perCommand := map[string]func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective){
-		"attach": liveSessions,
-		"kill":   liveSessions,
-		"close":  liveSessions,
-		"send":   liveSessions,
-		"peek":   liveSessions,
-		"status": allSessions,
-		"logs":   allSessions,
-		"open":   completeDefinitions,
-		"rm-def": completeDefinitions,
-		"rm":     completeTerminalSessions,
-		"define": noComp,
+		"attach":      liveSessions,
+		"kill":        liveSessions,
+		"close":       liveSessions,
+		"send":        liveSessions,
+		"peek":        liveSessions,
+		"status":      allSessions,
+		"logs":        allSessions,
+		"open":        completeDefinitions,
+		commandWait:   liveSessions,
+		"rm-def":      completeDefinitions,
+		"rm":          completeTerminalSessions,
+		commandDefine: noComp,
 		"signal": func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			if len(args) == 1 {
-				return []string{string(core.StatusAwaitingInput)}, cobra.ShellCompDirectiveNoFileComp
+				return []string{string(core.StatusAwaitingInput), string(core.StatusDone)}, cobra.ShellCompDirectiveNoFileComp
+			}
+			if len(args) > 1 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
 			return liveSessions(cmd, args, toComplete)
 		},
@@ -43,6 +47,9 @@ func wireCompletions(root *cobra.Command) {
 		}
 		if c.Flags().Lookup("harness") != nil {
 			_ = c.RegisterFlagCompletionFunc("harness", completeHarnesses)
+		}
+		if c.Name() == commandDefine {
+			_ = c.RegisterFlagCompletionFunc("from", allSessions)
 		}
 	}
 }

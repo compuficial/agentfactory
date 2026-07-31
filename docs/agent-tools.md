@@ -28,7 +28,10 @@ make agent-tools-check
 
 Then **restart** your agent (Cursor, Claude Code, …) so hooks/MCP reload.
 
-`scripts/init.sh` only installs these when run with `--with-agent-tools`; otherwise it just prints a reminder.
+> **Trust boundary:** setup installs host software globally and may execute
+> current upstream package or HTTPS installer content. Review this script and
+> the linked upstream projects before running it in a controlled environment.
+> CI never invokes these installers; `make agent-tools-check` is local-only.
 
 ## When to use which
 

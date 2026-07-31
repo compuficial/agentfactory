@@ -28,6 +28,11 @@ const MinVersion = "3.2"
 // setOption is the tmux subcommand used to apply the locked server config.
 const setOption = "set-option"
 
+const (
+	nullConfig = "/dev/null"
+	tmuxBinary = "tmux"
+)
+
 // gatePerm: the payload-gate file is same-user IPC; nothing else reads it.
 const gatePerm = 0o600
 
@@ -42,6 +47,9 @@ type Backend struct {
 func New(socket string, sendDelay time.Duration) *Backend {
 	return &Backend{Socket: socket, SendDelay: sendDelay}
 }
+
+// SetSendDelay changes the gap between literal input and Enter.
+func (b *Backend) SetSendDelay(delay time.Duration) { b.SendDelay = delay }
 
 func sessionName(id string) string { return "af-" + id }
 
@@ -58,8 +66,8 @@ func paneTarget(id string) string { return "=" + sessionName(id) + ":" }
 // guarantees the user's .tmux.conf is never sourced if this call
 // happens to start the server.
 func (b *Backend) cmd(args ...string) *exec.Cmd {
-	full := append([]string{"-L", b.Socket, "-f", "/dev/null"}, args...)
-	return exec.CommandContext(context.Background(), "tmux", full...)
+	full := append([]string{"-L", b.Socket, "-f", nullConfig}, args...)
+	return exec.CommandContext(context.Background(), tmuxBinary, full...)
 }
 
 func (b *Backend) run(args ...string) (string, error) {
@@ -76,7 +84,7 @@ func (b *Backend) run(args ...string) (string, error) {
 // CheckTmux verifies the tmux binary exists and is >= MinVersion.
 // Returns the version string. Failures are exit-4 environment errors.
 func CheckTmux() (string, error) {
-	out, err := exec.CommandContext(context.Background(), "tmux", "-V").Output()
+	out, err := exec.CommandContext(context.Background(), tmuxBinary, "-V").Output()
 	if err != nil {
 		return "", core.Errf(core.ExitEnv, "tmux not found on PATH (af requires tmux >= %s): %v", MinVersion, err)
 	}
@@ -166,6 +174,14 @@ func (b *Backend) Create(sess *core.AgentSession) error {
 	if out, err := b.cmd(args...).CombinedOutput(); err != nil {
 		return core.Errf(core.ExitRuntime, "tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	setupComplete := false
+	defer func() {
+		if setupComplete {
+			return
+		}
+		_ = b.Kill(sess.ID)
+		_ = os.Remove(gate)
+	}()
 	if _, err := b.run("pipe-pane", "-t", paneTarget(sess.ID), "-o", "cat >> "+shellQuote(sess.LogPath)); err != nil {
 		return core.Errf(core.ExitRuntime, "attach log pipe: %v", err)
 	}
@@ -186,6 +202,7 @@ func (b *Backend) Create(sess *core.AgentSession) error {
 	} else {
 		sess.PGID = pid // payload may have exited already; group == pid for session leaders
 	}
+	setupComplete = true
 	return nil
 }
 
@@ -194,7 +211,7 @@ func (b *Backend) Create(sess *core.AgentSession) error {
 // real terminal size always wins on attach.
 func (b *Backend) attachArgv(id string) []string {
 	return []string{
-		"tmux", "-L", b.Socket, "-f", "/dev/null",
+		tmuxBinary, "-L", b.Socket, "-f", nullConfig,
 		"set-option", "-w", "-t", paneTarget(id), "window-size", "latest", ";",
 		"attach-session", "-t", target(id),
 	}
@@ -218,24 +235,22 @@ func AttachEnv() []string {
 	return out
 }
 
-// Attach replaces the current process with tmux attach (§ Appendix B).
-// Nested attaches (user's tmux -> af session) are made to work by
-// stripping $TMUX; the detach hint prints first because Exec never
-// returns.
+// Attach replaces the current process with tmux attach.
 func (b *Backend) Attach(id string) error {
-	path, err := exec.LookPath("tmux")
+	spec, err := b.PrepareAttach(id)
 	if err != nil {
-		return core.Errf(core.ExitEnv, "tmux not found: %v", err)
+		return err
 	}
-	if os.Getenv("TMUX") != "" {
-		fmt.Fprintln(os.Stderr, "af: nested inside tmux — detach with C-b twice then d (the doubled prefix reaches the inner session)")
-	}
-	return syscall.Exec(path, b.attachArgv(id), AttachEnv())
+	return syscall.Exec(spec.Path, spec.Argv, spec.Env)
 }
 
-// AttachArgs returns the argv for a fork/exec attach (TUI round-trip).
-func (b *Backend) AttachArgs(id string) []string {
-	return b.attachArgv(id)
+// PrepareAttach returns the process specification for a fork/exec attach.
+func (b *Backend) PrepareAttach(id string) (core.AttachSpec, error) {
+	path, err := exec.LookPath(tmuxBinary)
+	if err != nil {
+		return core.AttachSpec{}, core.Errf(core.ExitEnv, "tmux not found: %v", err)
+	}
+	return core.AttachSpec{Path: path, Argv: b.attachArgv(id), Env: AttachEnv()}, nil
 }
 
 // SyncSize resizes a session's window to w x h so its full-screen TUI
@@ -302,15 +317,15 @@ func (b *Backend) SendKeys(id string, input string, enter bool) error {
 // IsAlive reports whether the tmux session exists (dead-pane sessions
 // count as existing until harvested).
 func (b *Backend) IsAlive(id string) (bool, error) {
-	err := b.cmd("has-session", "-t", target(id)).Run()
+	out, err := b.cmd("has-session", "-t", target(id)).CombinedOutput()
 	if err == nil {
 		return true, nil
 	}
 	exitError := &exec.ExitError{}
-	if errors.As(err, &exitError) {
+	if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
 		return false, nil // missing session or no server
 	}
-	return false, core.Errf(core.ExitEnv, "tmux has-session: %v", err)
+	return false, core.Errf(core.ExitEnv, "tmux has-session: %v: %s", err, strings.TrimSpace(string(out)))
 }
 
 // DeadStatus reads pane_dead / pane_dead_status. exitCode is -1 when

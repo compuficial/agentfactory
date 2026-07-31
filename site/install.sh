@@ -1,7 +1,7 @@
 #!/bin/sh
 # AgentFactory installer — https://agentfactory.sh
 #
-#   curl -fsSL agentfactory.sh | sh
+#   curl -fsSL agentfactory.sh/install.sh | sh
 #
 # Downloads the release binary for your platform, verifies its SHA-256
 # checksum, and installs `af` to ~/.local/bin (override with AF_INSTALL_DIR).
@@ -37,7 +37,7 @@ esac
 version="${AF_VERSION:-}"
 if [ -z "$version" ]; then
   info "Finding the latest release"
-  version=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+  version=$(curl -fsSL --proto '=https' --tlsv1.2 "https://api.github.com/repos/$REPO/releases/latest" \
     | grep '"tag_name"' | head -n1 | cut -d'"' -f4)
   [ -n "$version" ] || err "could not determine the latest version"
 fi

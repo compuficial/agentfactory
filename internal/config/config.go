@@ -56,7 +56,7 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // D returns the plain time.Duration.
-func (d Duration) D() time.Duration { return time.Duration(d) }
+func (d *Duration) D() time.Duration { return time.Duration(*d) }
 
 // HarnessConfig is a user-defined harness: pure data, merged over the
 // built-ins by name.
@@ -147,6 +147,9 @@ func Load(path string, env func(string) string) (*Config, error) {
 		return nil, err
 	}
 	cfg.DataDir = core.ExpandHome(cfg.DataDir)
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -156,7 +159,7 @@ func applyFile(cfg *Config, path string) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("read config: %w", err)
+		return core.Errf(core.ExitEnv, "read config: %v", err)
 	}
 	// Unknown keys are a warning, not an error: strict-decode a throwaway
 	// copy to collect the complaint, then decode for real without KnownFields.
@@ -167,11 +170,11 @@ func applyFile(cfg *Config, path string) error {
 		if strings.Contains(err.Error(), "not found in type") {
 			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config %s: %v", path, err))
 		} else {
-			return fmt.Errorf("parse config %s: %w", path, err)
+			return core.Errf(core.ExitEnv, "parse config %s: %v", path, err)
 		}
 	}
 	if err := yaml.Unmarshal(raw, cfg); err != nil {
-		return fmt.Errorf("parse config %s: %w", path, err)
+		return core.Errf(core.ExitEnv, "parse config %s: %v", path, err)
 	}
 	return nil
 }
@@ -197,29 +200,50 @@ func applyEnv(cfg *Config, env func(string) string) error {
 		}
 		d, err := time.ParseDuration(v)
 		if err != nil {
-			return fmt.Errorf("%s: invalid duration %q", e.name, v)
+			return core.Errf(core.ExitEnv, "%s: invalid duration %q", e.name, v)
 		}
 		*e.dst = Duration(d)
 	}
 	if v := env(envDetect); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("%s: invalid bool %q", envDetect, v)
+			return core.Errf(core.ExitEnv, "%s: invalid bool %q", envDetect, v)
 		}
 		cfg.Detect = &b
 	}
 	if v := env(envSignals); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("%s: invalid bool %q", envSignals, v)
+			return core.Errf(core.ExitEnv, "%s: invalid bool %q", envSignals, v)
 		}
 		cfg.Signals.Enabled = &b
 	}
 	return nil
 }
 
+func validate(cfg *Config) error {
+	for _, setting := range []struct {
+		name  string
+		value Duration
+	}{
+		{"idle_threshold", cfg.IdleThreshold},
+		{"close_timeout", cfg.CloseTimeout},
+		{"send_delay", cfg.SendDelay},
+		{"tui.tick", cfg.TUI.Tick},
+	} {
+		if setting.value.D() <= 0 {
+			return core.Errf(core.ExitEnv, "%s must be greater than zero, got %s", setting.name, setting.value.D())
+		}
+	}
+	return nil
+}
+
 // Resolved renders the fully resolved config as YAML (for af doctor).
 func (c *Config) Resolved() string {
+	type resolvedSignals struct {
+		Enabled        bool     `yaml:"enabled"`
+		NotifyAwaiting []string `yaml:"notify_awaiting"`
+	}
 	type out struct {
 		Socket        string                   `yaml:"socket"`
 		DataDir       string                   `yaml:"data_dir"`
@@ -227,7 +251,7 @@ func (c *Config) Resolved() string {
 		CloseTimeout  string                   `yaml:"close_timeout"`
 		SendDelay     string                   `yaml:"send_delay"`
 		Detect        bool                     `yaml:"detect"`
-		Signals       bool                     `yaml:"signals"`
+		Signals       resolvedSignals          `yaml:"signals"`
 		TUI           map[string]string        `yaml:"tui"`
 		Harnesses     map[string]HarnessConfig `yaml:"harnesses,omitempty"`
 	}
@@ -238,9 +262,12 @@ func (c *Config) Resolved() string {
 		CloseTimeout:  c.CloseTimeout.D().String(),
 		SendDelay:     c.SendDelay.D().String(),
 		Detect:        c.DetectEnabled(),
-		Signals:       c.SignalsEnabled(),
-		TUI:           map[string]string{"tick": c.TUI.Tick.D().String()},
-		Harnesses:     c.Harnesses,
+		Signals: resolvedSignals{
+			Enabled:        c.SignalsEnabled(),
+			NotifyAwaiting: c.Signals.NotifyAwaiting,
+		},
+		TUI:       map[string]string{"tick": c.TUI.Tick.D().String()},
+		Harnesses: c.Harnesses,
 	})
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)

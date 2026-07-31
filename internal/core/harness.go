@@ -40,7 +40,7 @@ func Builtins() map[string]Harness {
 			// blocks — no user setup, no dotfile edits. Any harness gets
 			// the same treatment via config (files: + {{.FilesDir}});
 			// overriding this harness in config opts out.
-			CommandTmpl: `claude{{if .FilesDir}} --settings {{.FilesDir}}/settings.json{{end}}{{if .Model}} --model {{.Model}}{{end}}`,
+			CommandTmpl: `claude{{if .FilesDir}} --settings {{shellquote (printf "%s/settings.json" .FilesDir)}}{{end}}{{if .Model}} --model {{shellquote .Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{quitExit},
 			Files: map[string]string{
@@ -75,19 +75,19 @@ func Builtins() map[string]Harness {
 		},
 		HarnessCodex: {
 			Name:        HarnessCodex,
-			CommandTmpl: `codex{{if .Model}} --model {{.Model}}{{end}}`,
+			CommandTmpl: `codex{{if .Model}} --model {{shellquote .Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{"/quit"},
 		},
 		HarnessGrok: {
 			Name:        HarnessGrok,
-			CommandTmpl: `grok{{if .Model}} --model {{.Model}}{{end}}`,
+			CommandTmpl: `grok{{if .Model}} --model {{shellquote .Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{quitExit},
 		},
 		HarnessOpencode: {
 			Name:        HarnessOpencode,
-			CommandTmpl: `opencode{{if .Model}} --model {{.Model}}{{end}}`,
+			CommandTmpl: `opencode{{if .Model}} --model {{shellquote .Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{quitExit},
 		},
@@ -98,7 +98,7 @@ func Builtins() map[string]Harness {
 		// no documented slash-exit, so close falls through to SIGTERM.
 		HarnessCursorAgent: {
 			Name:        HarnessCursorAgent,
-			CommandTmpl: `cursor-agent{{if .Model}} --model {{.Model}}{{end}}`,
+			CommandTmpl: `cursor-agent{{if .Model}} --model {{shellquote .Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{},
 		},
@@ -108,7 +108,7 @@ func Builtins() map[string]Harness {
 		// `agent`; falls back to "not on PATH" when it doesn't.
 		HarnessAgent: {
 			Name:        HarnessAgent,
-			CommandTmpl: `agent{{if .Model}} --model {{.Model}}{{end}}`,
+			CommandTmpl: `agent{{if .Model}} --model {{shellquote .Model}}{{end}}`,
 			Env:         map[string]string{},
 			QuitKeys:    []string{quitExit},
 		},
@@ -156,7 +156,7 @@ func (s HarnessSet) Resolve(name string) (Harness, error) {
 // without files, so {{if .FilesDir}} guards keep those renders clean).
 // Render errors and empty results are validation failures (exit 1).
 func RenderCommand(h Harness, def AgentDefinition, filesDir string) (string, error) {
-	tmpl, err := template.New(h.Name).Parse(h.CommandTmpl)
+	tmpl, err := template.New(h.Name).Funcs(template.FuncMap{"shellquote": shellQuote}).Parse(h.CommandTmpl)
 	if err != nil {
 		return "", Errf(ExitRuntime, "harness %s: bad command template: %v", h.Name, err)
 	}
@@ -184,6 +184,9 @@ func RenderCommand(h Harness, def AgentDefinition, filesDir string) (string, err
 func MaterializeFiles(h Harness, dataDir string) (string, error) {
 	if len(h.Files) == 0 {
 		return "", nil
+	}
+	if h.Name == "" || h.Name == "." || h.Name == ".." || h.Name != filepath.Base(h.Name) {
+		return "", Errf(ExitRuntime, "invalid harness name %q (bare names only)", h.Name)
 	}
 	dir := filepath.Join(dataDir, "harnesses", h.Name)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -253,9 +256,13 @@ func (s HarnessSet) MatchBinary(token string) (Harness, bool) {
 func QuoteArgs(args []string) string {
 	out := make([]string, len(args))
 	for i, a := range args {
-		out[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+		out[i] = shellQuote(a)
 	}
 	return strings.Join(out, " ")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // MergeEnv layers maps left to right (rightmost wins).

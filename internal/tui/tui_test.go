@@ -1,6 +1,7 @@
 package tui_test
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -27,8 +28,8 @@ func testDeps(t *testing.T) tui.Deps {
 	socket := "af-test-" + hex.EncodeToString(buf)
 	dataDir := t.TempDir()
 	t.Cleanup(func() {
-		exec.Command("tmux", "-L", socket, "kill-server").Run()
-		os.Remove(filepath.Join(fmt.Sprintf("/tmp/tmux-%d", os.Getuid()), socket))
+		_ = exec.CommandContext(context.Background(), "tmux", "-L", socket, "kill-server").Run()
+		_ = os.Remove(filepath.Join(fmt.Sprintf("/tmp/tmux-%d", os.Getuid()), socket))
 	})
 	// The command bar builds fresh cli roots, which read env config.
 	t.Setenv("AF_SOCKET", socket)
@@ -181,7 +182,9 @@ func TestDashboardFullScreenHarness(t *testing.T) {
 	// assertion that it saw the preview's size rather than 80x24.
 	waitTUI(t, m, func() bool {
 		m.Refresh()
-		deps.Manager.Send(sess, "ping", true)
+		if err := deps.Manager.Send(sess, "ping", true); err != nil {
+			t.Fatal(err)
+		}
 		view := m.View()
 		return strings.Contains(view, "echo: ping") &&
 			strings.Contains(view, "> input-bar") &&

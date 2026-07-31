@@ -23,6 +23,7 @@ func newAttachCmd() *cobra.Command {
 				app.Close()
 				return core.Errf(core.ExitRuntime, "session %s is %s; nothing to attach to", sess.ID, sess.Status)
 			}
+			writeNestedAttachHint(cmd)
 			app.Close() // release the DB before exec replaces the process
 			return app.Backend.Attach(sess.ID)
 		},

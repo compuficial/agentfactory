@@ -28,10 +28,10 @@ or steer each other. `af` exists to fix exactly that:
 - **Define once, launch forever.** An agent definition is a name +
   harness + model + workdir. `af open planner` beats re-typing flags
   into tmux windows.
-- **Know when you're needed.** A terminal bell, a notification, a
-  permission dialog on screen, or an auto-wired hook flips a session to
-  `awaiting-input` the moment it blocks on you — no setup; the
-  dashboard makes it loud; the next output clears it automatically.
+- **Know when you're needed.** Auto-wired hooks and terminal signals
+  report `awaiting-input` immediately; quiet-screen detection catches
+  common permission dialogs on the next reconciliation pass. The
+  dashboard makes it loud, and the next output clears it automatically.
 - **Perfect attach.** `af attach` execs into tmux — full fidelity,
   resize, alt-screen. Works from inside your own tmux too (detach the
   nest with `C-b C-b d`). Detach and you're back at the dashboard.
@@ -39,8 +39,9 @@ or steer each other. `af` exists to fix exactly that:
   `af status --json | jq ...` reads the fleet; exit codes are a
   contract.
 - **Unkillable by design.** No daemon. Sessions live in tmux, state in
-  SQLite; `af` reconciles the two on every invocation. Kill, upgrade,
-  or rebuild `af` freely — your agents don't notice.
+  SQLite; commands that observe or act on sessions reconcile the two
+  first, and the dashboard reconciles on every tick. Kill, upgrade, or
+  rebuild `af` freely — your agents don't notice.
 
 ## Install
 
@@ -145,6 +146,9 @@ af rm-def reviewer           # delete one (running sessions unaffected)
 
 `--open` defines and launches in one step.
 
+Definitions may contain environment values. `af defs --json` returns
+those values by design; treat its output as sensitive.
+
 ## A multi-agent workflow
 
 Three agents, three vendors, one repo — architect, builder, critic:
@@ -232,15 +236,17 @@ human-only. An agent signals itself done with `af_signal(state:
 |---|---|
 | `j`/`k`, arrows | move selection (preview follows) |
 | `a` | attach; detach (`C-b d`) returns to the dashboard |
-| `Enter` | detail view — metadata, env (secrets masked), recent log; scrollable |
+| `Enter` | detail view — metadata, env (likely sensitive values masked by key name), recent log; scrollable |
 | `l` | logs view (`f` toggles follow) |
 | `o` | open a session from a definition (`d` deletes one) |
 | `x` / `X` | close / kill, with y/n confirm |
-| `:` | command bar — any `af` command, run in-process |
+| `:` | command bar — bounded, noninteractive `af` commands, run in-process |
 | `?` | help · `q` quit (sessions keep running) |
 
 The preview pane mirrors the selected session's live screen at the
 preview's own geometry. It's read-only — type via attach or `af send`.
+The command bar rejects commands that would block, replace the process,
+or start a protocol server; attach remains available through `a`.
 
 ## Service sessions
 
@@ -256,7 +262,8 @@ af open local-agent    # a definition whose env points its harness at :8080
 
 ## Scripting
 
-`--json` on every read command; stable exit codes on all of them:
+`--json` is available on `status`, `defs`, `peek`, `doctor`, and
+`wait`. Stable exit codes apply across the CLI:
 `0` success · `1` runtime error · `2` usage error · `3` not found ·
 `4` environment problem · `5` wait timeout. Sessions are addressed by
 ID or name.
@@ -266,7 +273,12 @@ af status --json         # array of session objects
 af defs --json           # definitions
 af peek critic --json    # {"screen": "..."}
 af doctor --json         # environment checks
+af wait critic --json    # final session object
 ```
+
+Line-limited `logs` and MCP log reads cap the file bytes scanned at
+4 MiB. `af logs --lines 0` explicitly requests the entire log; `peek`
+reads the rendered screen instead of the log file.
 
 Cleanup is scriptable too: `af close --all`, `af kill --all`,
 `af rm <session>` (drop one finished session + its log), `af prune`
@@ -324,7 +336,7 @@ tui:
 # Add harnesses, or override a built-in (same name wins):
 harnesses:
   aider:
-    command: "aider{{if .Model}} --model {{.Model}}{{end}}"  # Go text/template
+    command: "aider{{if .Model}} --model {{shellquote .Model}}{{end}}"  # Go text/template
     env: {}
     quit_keys: ["/exit"]                    # empty = signal-only close
     detect:                                 # optional screen patterns (regex)
@@ -332,15 +344,19 @@ harnesses:
       working: ["esc to interrupt"]         # ...unless one of these also matches
 ```
 
-Rendered commands run via `sh -c`, so templates may contain pipes and
-quoting regardless of your login shell.
+Rendered commands run via `sh -c`, so harness configuration is trusted
+code. Use `{{shellquote .Model}}`, `{{shellquote .WorkDir}}`, and
+`{{shellquote .FilesDir}}` whenever a value enters shell syntax; the
+built-in harnesses do this automatically. Session state is stored under
+a private `0700` data directory with `0600` database and log files.
 
 ## Shell completion
 
 `make install` installs bash completion (picked up automatically if
 the `bash-completion` package is present). Completion is dynamic:
-session arguments complete with live names and IDs, `af open` completes
-definitions, `--harness` completes known harnesses.
+session arguments complete with appropriate live names and IDs,
+`af open`/`af define --from` complete definitions, and `--harness`
+completes known harnesses.
 
 ```sh
 af completion zsh  > "${fpath[1]}/_af"                    # zsh
@@ -360,7 +376,7 @@ af completion fish > ~/.config/fish/completions/af.fish   # fish
 ## Development
 
 ```sh
-make precommit           # the gate: tidy + misspell + golangci-lint + tests (-race)
+make precommit           # tidy + text/docs/shell + format + lint + race tests
 make cover               # coverage summary
 make fuzz                # byte-parser fuzzers (~20s)
 make help
@@ -369,7 +385,8 @@ make help
 Integration tests use a throwaway tmux socket — your own sessions are
 never touched.
 
-Suite design: [docs/testing.md](docs/testing.md).
+Suite design: [docs/testing.md](docs/testing.md). Current enforced gates
+and audited limitations: [docs/quality.md](docs/quality.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and
 [docs/architecture.md](docs/architecture.md) for the design.

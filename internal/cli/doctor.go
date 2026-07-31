@@ -112,7 +112,7 @@ func runDoctorChecks(cfg *config.Config) doctorReport {
 		add("reconciliation", false, "skipped: needs tmux and database")
 	}
 
-	// fully resolved config (§9)
+	// Fully resolved config makes precedence and feature switches inspectable.
 	add("config", true, "resolved:\n"+cfg.Resolved())
 	return report
 }

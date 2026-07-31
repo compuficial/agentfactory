@@ -12,9 +12,9 @@ Read and follow [AGENTS.md](../../AGENTS.md) for this repository.
 - `af` is an agent multiplexer built on tmux: daemonless, local-first.
 - Layout: `cmd/af`, `internal/{cli,core,tmux,tui,config}`. Only
   `internal/tmux` imports tmux. Harnesses are data, never code paths.
-- Verify before done: `go build ./... && go test ./...` (`-race` for
-  concurrent code); `gofmt -l .` and `go vet ./...` clean. CI runs
-  staticcheck + tests on Linux and macOS.
+- Verify before done: `make precommit`. It checks modules, repository
+  text/docs/shell, gofumpt/goimports, the configured lint suite, and
+  race-enabled tests. CI runs the same gates on Linux and macOS.
 - Commit with [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/);
   versions follow [SemVer](https://semver.org/) via release-please +
   goreleaser. Never author AI attribution; never commit planning artifacts.

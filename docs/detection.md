@@ -18,7 +18,7 @@ a Codex sketch:
 ```yaml
 harnesses:
   codex:
-    command: 'codex -c notify=["sh","{{.FilesDir}}/notify.sh"]{{if .Model}} --model {{.Model}}{{end}}'
+    command: 'codex -c {{shellquote (printf "notify=[%q,%q]" "sh" (printf "%s/notify.sh" .FilesDir))}}{{if .Model}} --model {{shellquote .Model}}{{end}}'
     quit_keys: ["/quit"]
     files:
       notify.sh: |
@@ -51,6 +51,10 @@ permission questions, numbered choice menus, suppressed by spinners and
 per-harness `detect:` rules override them (`claude-code` ships a tuned
 set). Latency ≈ `idle_threshold`. Disable the tier with
 `detect: false` / `AF_DETECT=false`.
+
+The CLI reconciles before commands that observe or act on sessions;
+the dashboard does so on each configured TUI tick. Screen detection is
+therefore polling-based even though hook and terminal signals are not.
 
 ## Explicit signals
 

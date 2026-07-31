@@ -7,7 +7,7 @@ testing mandate.
 Before finishing any task that touches Go source, config, or docs:
 
 ```bash
-go build ./... && go test ./...   # add -race for concurrent code
+make precommit
 ```
 
 Never author AI or tool attribution in commit messages. Never commit

@@ -32,7 +32,7 @@ var (
 		core.StatusStarting: lipgloss.NewStyle().Foreground(lipgloss.Color("220")),
 		core.StatusWorking:  lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
 		core.StatusIdle:     lipgloss.NewStyle().Foreground(lipgloss.Color("250")),
-		// awaiting-input must be visually loud (§11, M4): the whole
+		// awaiting-input must be visually loud: the whole
 		// row lights up, selected or not. done is green-quiet — task
 		// complete is good news, not an interrupt.
 		core.StatusAwaitingInput: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("125")),
@@ -172,7 +172,7 @@ func (m *model) layout(footerH int) (listH, previewH int) {
 }
 
 // previewArea is the preview panel's content geometry; the selected
-// session's tmux window is synced to exactly this size. Assumes the
+// session's backend view is synced to exactly this size. Assumes the
 // usual one-line footer — a taller flash skews it for a tick or two,
 // which is not worth rendering the footer twice to avoid.
 func (m *model) previewArea() (w, h int) {
@@ -294,7 +294,7 @@ func (m *model) viewFooter() string {
 		return flashStyle.Render(firstLines(m.flash, flashMaxLines, m.width))
 	}
 	return hints("j/k", "move", "a", "attach", "o", "open", "s", "save", "x", "close", "X", "kill",
-		"l", "logs", keyEnter, "detail", ":", "cmd", "?", "help", "q", "quit")
+		"l", commandLogs, keyEnter, "detail", ":", "cmd", "?", "help", "q", "quit")
 }
 
 func firstLines(s string, n, width int) string {
@@ -372,7 +372,7 @@ func (m *model) detailLines(s *core.AgentSession) []string {
 	}
 	env := s.Env
 	if len(env) == 0 {
-		// Rows written by another af build may lack env; §7.4 still
+		// Rows written by another af build may lack env; the detail view still
 		// guarantees the injected AF_* pair.
 		env = map[string]string{"AF_SESSION_ID": s.ID, "AF_SESSION_NAME": s.Name}
 	}
@@ -403,8 +403,8 @@ func wrapPlain(s string, w int) []string {
 	return parts
 }
 
-// maskEnvValue hides secrets in the detail view (§11 requires
-// KEY/TOKEN/SECRET; the rest are the same idea).
+// maskEnvValue hides likely secrets in the detail view. This is a
+// conservative key-name heuristic rather than a general secret scanner.
 func maskEnvValue(key, value string) string {
 	upper := strings.ToUpper(key)
 	for _, needle := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"} {
@@ -428,7 +428,7 @@ func (m *model) viewLogs() string {
 	if m.follow {
 		followLabel = "follow on"
 	}
-	title := titleStyle.Render("logs") + dimStyle.Render(fmt.Sprintf(" · %s (%s) · ", name, id)) + accentStyle.Render(followLabel)
+	title := titleStyle.Render(commandLogs) + dimStyle.Render(fmt.Sprintf(" · %s (%s) · ", name, id)) + accentStyle.Render(followLabel)
 	body := panel(title, strings.Split(m.logsVP.View(), "\n"), m.width, max(minPanelRows, m.height-1))
 	return body + "\n" + hints("j/k", "scroll", "f", "toggle follow", "q/esc", "back")
 }
@@ -464,7 +464,7 @@ func (m *model) viewHelp() string {
 		{"x", "close the selected session (graceful, y/n)"},
 		{"X", "kill the selected session (immediate, y/n)"},
 		{"l", "logs view (f toggles follow)"},
-		{":", "command bar — any af command, e.g. :status --all"},
+		{":", "command bar — noninteractive af commands, e.g. :status --all"},
 		{"?", "this help"},
 		{"q", "quit"},
 	}

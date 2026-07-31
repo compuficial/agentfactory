@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -30,8 +31,8 @@ func testEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // ignore any user config file
 	t.Setenv("AF_IDLE_THRESHOLD", "1s")
 	t.Cleanup(func() {
-		exec.Command("tmux", "-L", socket, "kill-server").Run()
-		os.Remove(filepath.Join(fmt.Sprintf("/tmp/tmux-%d", os.Getuid()), socket))
+		_ = exec.CommandContext(context.Background(), "tmux", "-L", socket, "kill-server").Run()
+		_ = os.Remove(filepath.Join(fmt.Sprintf("/tmp/tmux-%d", os.Getuid()), socket))
 	})
 }
 
@@ -121,12 +122,12 @@ func TestOpenCreatesLiveTmuxSessionWithEnv(t *testing.T) {
 
 	// Live tmux session on the af socket (M1 acceptance).
 	socket := os.Getenv("AF_SOCKET")
-	if err := exec.Command("tmux", "-L", socket, "has-session", "-t", "=af-"+id).Run(); err != nil {
+	if err := exec.CommandContext(context.Background(), "tmux", "-L", socket, "has-session", "-t", "=af-"+id).Run(); err != nil {
 		t.Fatalf("tmux session af-%s not alive: %v", id, err)
 	}
 
 	// Env injected: ask tmux for the session environment.
-	out, err := exec.Command("tmux", "-L", socket, "show-environment", "-t", "=af-"+id).Output()
+	out, err := exec.CommandContext(context.Background(), "tmux", "-L", socket, "show-environment", "-t", "=af-"+id).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestExitCodeHarvest(t *testing.T) {
 
 	// Harvested session is gone from tmux...
 	socket := os.Getenv("AF_SOCKET")
-	if err := exec.Command("tmux", "-L", socket, "has-session", "-t", "=af-"+id).Run(); err == nil {
+	if err := exec.CommandContext(context.Background(), "tmux", "-L", socket, "has-session", "-t", "=af-"+id).Run(); err == nil {
 		t.Fatal("tmux session should be killed after harvest")
 	}
 	// ...hidden from the default list, but kept in --all history.

@@ -33,15 +33,15 @@ Read [docs/architecture.md](docs/architecture.md) for the full picture. In
 short, five principles govern what "fits":
 
 1. **Daemonless.** `af` has no background process. tmux holds the live
-   sessions, SQLite holds identity and state, and every invocation reconciles
-   the two before answering. Never add a daemon, a watcher, or a
-   long-running process.
+   sessions, SQLite holds identity and state, and commands that observe or
+   act on sessions reconcile the two before answering. Never add an `af`
+   daemon, watcher, or other background service.
 
-2. **tmux lives behind an interface.** Nothing above `internal/tmux` may know
-   tmux exists — all substrate access goes through the `SessionBackend`
-   interface. New backend capabilities extend that interface; they don't leak
-   tmux upward. (A native-PTY backend would be a second implementation, not a
-   rewrite.)
+2. **tmux lives behind an interface.** Core and TUI substrate access goes
+   through `SessionBackend`. CLI composition and the environment probe are
+   the narrow places that construct/inspect the tmux implementation. New
+   runtime capabilities extend the interface rather than leaking tmux into
+   lifecycle or dashboard logic.
 
 3. **Harnesses are data, not code.** A harness is a command template, env,
    quit keys, detection patterns, and wired files — pure data. Supporting a
@@ -64,7 +64,7 @@ lifecycle, status detection (as data), coordination primitives, harness
 definitions, CLI and TUI ergonomics, and substrate work behind
 `SessionBackend`.
 
-**Out of scope** (from the spec's non-goals — propose these elsewhere):
+**Out of scope** (project non-goals — propose these elsewhere):
 
 - Automatic task decomposition, routing, or orchestration.
 - Model/backend abstraction inside `af` — harnesses talk to models; `af` talks
@@ -83,6 +83,8 @@ harness is a data entry in `Builtins()` (`internal/core/harness.go`):
 - [ ] Add the entry: `name`, command template (Go `text/template`), `QuitKeys`
       (empty = signal-only close), and — optionally — `Detect` patterns and
       wired `Files`.
+- [ ] Shell-quote every inserted value with `{{shellquote ...}}`; commands
+      are trusted configuration executed via `sh -c`.
 - [ ] Keep it **data**. No Go branches on the harness name, anywhere. If you
       find yourself needing one, the mechanism is wrong — make it a field.
 - [ ] Add a row to the built-in harnesses table in the [README](README.md).
@@ -193,17 +195,19 @@ Two rules that keep the suite honest:
 
 ### Pre-commit gate
 
-One command runs the whole local gate — tidy, misspell, golangci-lint
-(with `--fix`), and the race-enabled test suite:
+One command runs the whole local gate — module tidiness, repository text,
+shell syntax, local documentation links, gofumpt/goimports, golangci-lint
+(with `--fix` locally), and the race-enabled test suite:
 
 ```sh
 make precommit
 ```
 
-CI runs the same via `make ci` (report-only lint, plus govulncheck, a
-crossbuild smoke, and a clean-tree check). Linters are pinned in
-`tools/go.mod`; the config is `.golangci.yml`. **Never add `//nolint`
-or disable a linter to get green — fix the code.**
+`make ci` runs that gate with report-only lint, then adds govulncheck, a
+crossbuild smoke, and a clean-tree check. GitHub Actions runs the same
+checks as split jobs on Linux and macOS. Tools are pinned in
+`tools/go.mod`; lint configuration is `.golangci.yml`. **Never add
+`//nolint` or disable a linter to get green — fix the code.**
 
 `make cover` gives a coverage summary; `make fuzz` runs the byte-parser
 fuzzers. `make hooks` installs the optional pre-commit + commit-msg
@@ -212,7 +216,7 @@ hooks (conventional-commit enforcement).
 ### PR testing checklist
 
 - [ ] Tests accompany the change (fixtures over mocks for behavior)
-- [ ] `make precommit` passes (lint + `go test -race ./...`)
+- [ ] `make precommit` passes (text/docs/shell + format + lint + race tests)
 - [ ] Harness knowledge stayed *data* — no Go branches on a harness name
 - [ ] Contract changes (exit codes, `--json` fields, status names) are called
       out explicitly in the PR
@@ -231,6 +235,7 @@ something, update its docs in the same PR:
 | A status, exit code, or `--json` field | README status/scripting tables + [docs/architecture.md](docs/architecture.md) |
 | Blocked-agent detection | [docs/detection.md](docs/detection.md) |
 | The test approach | [docs/testing.md](docs/testing.md) |
+| Quality gates or audited limitations | [docs/quality.md](docs/quality.md) |
 | Architecture or the backend boundary | [docs/architecture.md](docs/architecture.md) |
 | The website | [site/](site/) (deploys to agentfactory.sh on merge) |
 

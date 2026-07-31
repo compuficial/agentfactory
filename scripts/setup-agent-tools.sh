@@ -43,7 +43,7 @@ install_rtk() {
   if have brew; then
     brew install rtk
   else
-    curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+    curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
     export PATH="${HOME}/.local/bin:${PATH}"
   fi
   have rtk || { warn "rtk install finished but binary not on PATH; open a new shell"; return 1; }
@@ -76,7 +76,7 @@ install_codegraph() {
   if have npm; then
     npm i -g @colbymchenry/codegraph
   else
-    curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+    curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
     export PATH="${HOME}/.local/bin:${PATH}"
   fi
   have codegraph || { warn "codegraph install finished but binary not on PATH; open a new shell"; return 1; }
