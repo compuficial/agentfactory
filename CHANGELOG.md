@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries are generated from [Conventional Commits](https://www.conventionalcommits.org/)
 by [release-please](https://github.com/googleapis/release-please).
 
+## [0.3.1](https://github.com/compuficial/agentfactory/compare/v0.3.0...v0.3.1) (2026-07-31)
+
+
+### Fixed
+
+* bump Go toolchain to 1.26.5 for crypto/tls GO-2026-5856 ([68bd14c](https://github.com/compuficial/agentfactory/commit/68bd14c3070074c35cd1b0aa3c09d5f652965cc2))
+* harden session lifecycle and quality gates ([b50d646](https://github.com/compuficial/agentfactory/commit/b50d646c5936edcaf2c42e8d742593b4f52e0be5))
+
 ## [0.3.0](https://github.com/compuficial/agentfactory/compare/v0.2.0...v0.3.0) (2026-07-28)
 
 
